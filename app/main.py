@@ -1,9 +1,20 @@
 from fastapi import FastAPI
 
+from app.modules.auth import router as auth_router
 
-from . import core, shared,models
+
 app = FastAPI()
 
-@app.get('/')
-def user_login():
-    return{ "name": "hi"}
+
+@app.get("/")
+def root():
+    return {"status": "ok", "message": "API is running"}
+
+
+app.include_router(auth_router)
+
+
+@app.on_event("startup")
+async def on_startup():
+    # Database initialization (optional - try but don't block)
+    pass

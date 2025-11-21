@@ -37,6 +37,16 @@ class LoginRequest(BaseModel):
     email: EmailStr
     password: str
 
+class Location(BaseModel):
+	user_id: int
+	latitude: str
+	longitude: str
+	timestamp: datetime
+
+	class Config:
+		from_attributes = True
+
+
 
 class Token(BaseModel):
 	access_token: str

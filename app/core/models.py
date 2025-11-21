@@ -24,3 +24,13 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     last_login = Column(DateTime, nullable=True)
+
+
+class Loaction(Base):
+    __tablename__ = "locations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, nullable=False)
+    latitude = Column(String(50), nullable=False)
+    longitude = Column(String(50), nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)

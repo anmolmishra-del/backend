@@ -89,7 +89,7 @@ def create_user(user: UserCreate) -> dict:
         #     "last_login": None,
         #     "hashed_password": hashed
         # }
-      #  return _memory_users[user.email]
+        # return _memory_users[user.email]
 
 
 def get_user_by_username(username: str) -> Optional[dict]:
@@ -179,3 +179,36 @@ def authenticate_user_by_email(email: str, password: str) -> Optional[dict]:
     if not verify_password(password, user.get("hashed_password", "")):
         return None
     return user
+
+
+def create_location(user_id: int, latitude: str, longitude: str) -> dict:
+    try:
+        from app.core.database import SessionLocal
+        from app.core.models import Loaction
+        session = SessionLocal()
+        try:
+            db_location = Loaction(
+                user_id=user_id,
+                latitude=latitude,
+                longitude=longitude
+            )
+            session.add(db_location)
+            session.commit()
+            session.refresh(db_location)
+            print(f"✓ Location for user {user_id} saved to database")
+            return {
+                "id": db_location.id,
+                "user_id": db_location.user_id,
+                "latitude": db_location.latitude,
+                "longitude": db_location.longitude,
+                "timestamp": db_location.timestamp
+            }
+        except Exception as db_err:
+            session.rollback()
+            print(f"⚠ Database error: {db_err}")
+            raise
+        finally:
+            session.close()
+    except Exception as e:
+        print(f"⚠ Could not save location: {e}")
+        raise

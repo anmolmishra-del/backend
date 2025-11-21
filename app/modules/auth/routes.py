@@ -4,12 +4,14 @@ from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.modules.admin.routes import get_user_by_id
-from app.shared.schemas import UserCreate, UserOut, Token, LoginRequest
+from app.shared.schemas import Location, UserCreate, UserOut, Token, LoginRequest
 from app.shared.services import create_user, authenticate_user_by_email
 from app.core.security import create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, get_current_user
 from app.core.rbac import require_roles
-
+from fastapi.security import OAuth2PasswordBearer
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 
 @router.post("/register", response_model=UserOut)
@@ -41,10 +43,32 @@ def login(payload: LoginRequest):
 
 
 @router.get("/me", response_model=UserOut)
-def me(user: dict = Depends(get_current_user)):
-    return user
+def me(token: str = Depends(oauth2_scheme)):
+    return {"token_return":token} 
 
 
 @router.get("/admin-only")
 def admin_only(user: dict = Depends(require_roles("admin"))):
     return {"message": "welcome admin", "user": user["username"]}
+
+
+@router.post("/locations")
+def log_location(location: Location, user: dict = Depends(get_current_user)):
+    try:
+        from app.core.database import SessionLocal
+        from app.core.models import Loaction
+        session = SessionLocal()
+        db_location = Loaction(
+            user_id=user["id"],
+            latitude=location["latitude"],
+            longitude=location["longitude"],
+            timestamp=location.get("timestamp")
+        )
+        session.add(db_location)
+        session.commit()
+        session.refresh(db_location)
+        return {"message": "Location logged successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Could not log location: {e}")
+    finally:
+        session.close()

@@ -311,3 +311,19 @@ Tables are created automatically on app startup via `init_models()` in `app/main
 ## License
 
 MIT
+
+
+
+
+
+
+ .\.venv\Scripts\python.exe scripts\check_users.py
+
+
+.\.venv\Scripts\python.exe -c "from app.core.database import init_models; init_models(); from app.core.database import SessionLocal; from app.core.models import User; s = SessionLocal(); users = s.query(User).all(); print(f'Total users in DB: {len(users)}'); [print(f'  - {u.username} ({u.email})') for u in users]"
+
+
+
+ Email: admin@example.com
+  Username: admin
+  Password: admin123

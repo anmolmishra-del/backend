@@ -89,7 +89,7 @@ def create_user(user: UserCreate) -> dict:
         #     "last_login": None,
         #     "hashed_password": hashed
         # }
-        # return _memory_users[user.email]
+      #  return _memory_users[user.email]
 
 
 def get_user_by_username(username: str) -> Optional[dict]:
@@ -168,44 +168,6 @@ def get_user_by_email(email: str) -> Optional[dict]:
             if u.get("email") == email:
                 return u
         return None
-
-
-
-
-def get_user_by_id(user_id: int) -> Optional[dict]:
-    try:
-        from app.core.database import SessionLocal
-        session = SessionLocal()
-        try:
-            q = select(User).where(User.id == user_id)
-            db_user = session.execute(q).scalars().first()
-            if not db_user:
-                return None
-            return {
-                "id": db_user.id,
-                "email": db_user.email,
-                "username": db_user.username,
-                "first_name": db_user.first_name,
-                "last_name": db_user.last_name,
-                "phone_number": db_user.phone_number,
-                "role": db_user.role,
-                "status": db_user.status,
-                "is_email_verified": db_user.is_email_verified,
-                "roles": db_user.roles,
-                "created_at": db_user.created_at,
-                "updated_at": db_user.updated_at,
-                "last_login": db_user.last_login,
-                "hashed_password": db_user.hashed_password
-            }
-        finally:
-            session.close()
-    except Exception:
-        # Fallback to in-memory storage (search by email)
-        for u in _memory_users.values():
-            if u.get("email") == email:
-                return u
-        return None
-
 
 
 def authenticate_user_by_email(email: str, password: str) -> Optional[dict]:

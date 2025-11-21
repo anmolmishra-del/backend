@@ -16,14 +16,14 @@ def root():
     return {"status": "ok", "message": "API is running"}
 
 
-# Add event listener to hash password on insert/update
-@event.listens_for(User, "before_insert", propagate=True)
-@event.listens_for(User, "before_update", propagate=True)
-def receive_before_insert(mapper, connection, target):
-    """Hash plain-text password before saving to DB."""
-    if target.hashed_password and not target.hashed_password.startswith('\\$'):
-        # If password doesn't start with bcrypt hash marker, hash it
-        target.hashed_password = get_password_hash(target.hashed_password)
+# # Add event listener to hash password on insert/update
+# @event.listens_for(User, "before_insert", propagate=True)
+# @event.listens_for(User, "before_update", propagate=True)
+# def receive_before_insert(mapper, connection, target):
+#     """Hash plain-text password before saving to DB."""
+#     if target.hashed_password and not target.hashed_password.startswith('\\$'):
+#         # If password doesn't start with bcrypt hash marker, hash it
+#         target.hashed_password = get_password_hash(target.hashed_password)
 
 
 # Setup SQLAdmin

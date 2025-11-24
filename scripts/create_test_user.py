@@ -6,8 +6,8 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from app.shared.schemas import UserCreate
-from app.shared.services import create_user
+from app.modules.auth.schemas import UserCreate
+from app.modules.auth.services import create_user
 
 u = UserCreate(username="testuser", password="TestPass123!", email="testuser@example.com", roles=["user"]) 
 

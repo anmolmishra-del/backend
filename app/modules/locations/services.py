@@ -1,20 +1,8 @@
-from typing import Optional
-from sqlalchemy import select
-from sqlalchemy.orm import Session
-
-from app.modules.auth.schemas import UserCreate
-from app.modules.auth.schemas import LoginRequest
-from app.modules.auth.models import User
-
-
-_memory_users = {}
-
-
 
 def create_location(user_id: int, latitude: float, longitude: float) -> dict:
     try:
         from app.core.database import SessionLocal
-        from app.core.models import Loaction
+        from app.modules.auth.models import Loaction
         session = SessionLocal()
         try:
             db_location = Loaction(

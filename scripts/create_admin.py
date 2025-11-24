@@ -6,8 +6,8 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.database import SessionLocal, init_models
-from app.core.models import User
-from app.core.security import get_password_hash
+from app.modules.auth.models import User
+from app.modules.auth.security import get_password_hash
 
 def create_admin():
     init_models()

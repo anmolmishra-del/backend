@@ -1,2 +1,24 @@
-*.pyc
-*__pycache__/
+# Bytecode
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+venv/
+new/
+.venv/
+
+# Logs and runtime files
+uvicorn.log
+uvicorn.pid
+nohup.out
+
+# Editor
+.vscode/
+
+# macOS
+.DS_Store
+
+# Python packaging
+*.egg-info/
+dist/
+build/

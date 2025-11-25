@@ -4,6 +4,8 @@ from app.modules.admin.views.locations import locationAdmin
 from app.modules.admin.views.users import UserAdmin
 from app.modules.auth import router as auth_router
 from app.modules.admin import router as admin_router
+from app.modules.food import foods
+from app.modules.food import restaurants
 from app.modules.locations import router as locations_router
 from app.core.database import engine
 
@@ -29,6 +31,8 @@ admin.add_view(locationAdmin)
 app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(locations_router)
+app.include_router(restaurants.router)
+app.include_router(foods.router)
 
 
 @app.on_event("startup")

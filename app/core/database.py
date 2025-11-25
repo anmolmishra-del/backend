@@ -5,7 +5,9 @@ from app.core.config import DATABASE_URL
 
 Base = declarative_base()
 
+
 engine = create_engine(DATABASE_URL, future=True, echo=False)
+
 
 SessionLocal = sessionmaker(engine, expire_on_commit=False)
 

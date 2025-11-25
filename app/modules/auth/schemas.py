@@ -51,6 +51,6 @@ class loginOut(BaseModel):
 	access_token: str
 	token_type: str = "bearer"
 	user: UserOut
-	location: Optional[LocationOut] = None
+	location: Optional[LocationOut] = []
 
 	

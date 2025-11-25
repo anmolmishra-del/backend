@@ -46,8 +46,11 @@ def login(payload: LoginRequest):
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="The system does not recognize your account!.Please create new account")
     access_token = create_access_token(subject=user["username"], expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    location = db.query(Loaction).filter(Loaction.user_id == user['id']).first()
-    re = {"access_token": access_token, "token_type": "bearer", "user":user,"location":location}
+    location = db.query(Loaction).filter(Loaction.user_id == user['id']).first()  or []
+
+    re = {"access_token": access_token, "token_type": "bearer", "user":user,
+          "location":location
+          }
 
     return re
 

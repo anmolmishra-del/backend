@@ -8,6 +8,7 @@ import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from app.core.config import SECRET_KEY
+from app.modules.auth.services import get_user_by_phone_number
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
@@ -28,12 +29,13 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return False
 
 
-def create_access_token(subject: str, expires_delta: Optional[timedelta] = None) -> str:
+def create_access_token(subject: int, expires_delta: Optional[timedelta] = None) -> str:
     now = datetime.utcnow()
     expire = now + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode = {"sub": subject, "exp": expire}
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+
 
 
 def decode_token(token: str) -> dict:
@@ -47,13 +49,37 @@ def decode_token(token: str) -> dict:
 
 
 def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
-    from app.modules.auth.services import get_user_by_username
+    # from app.modules.auth.services import get_user_by_username
     
     payload = decode_token(token)
-    username = payload.get("sub")
-    if username is None:
+    phone_number = payload.get("sub")
+    if phone_number is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token payload")
-    user = get_user_by_username(username)
+    user = get_user_by_phone_number(phone_number)
     if not user:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User not found")
     return user
+
+
+
+import random
+from datetime import datetime, timedelta
+import logging
+
+OTP_LENGTH = 6
+OTP_EXPIRE_MINUTES = int(os.getenv("OTP_EXPIRE_MINUTES", "5"))
+
+def generate_otp(length: int = OTP_LENGTH) -> str:
+    """Generate a numeric OTP of given length as a string (e.g. '042391')."""
+    start = 10**(length - 1)
+    return str(random.randint(start, 10**length - 1))
+
+def send_sms(phone_number: str, message: str) -> bool:
+    """
+    Placeholder to send SMS. Replace this with your SMS provider SDK/API call.
+    Return True on success, False on failure.
+    """
+    # Example log — replace with provider integration (Twilio, Fast2SMS, MSG91, etc.)
+    logging.info(f"[SMS placeholder] To: {phone_number} Message: {message}")
+    # TODO: integrate real SMS provider and return success status
+    return True

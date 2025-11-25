@@ -16,7 +16,7 @@ class UserCreate(BaseModel):
 	email: EmailStr 
 	first_name: Optional[str] = None
 	last_name: Optional[str] = None
-	phone_number: Optional[int] = None
+	phone_number: int = None
 	roles: List[str] = []
 
 
@@ -26,7 +26,7 @@ class UserOut(BaseModel):
 	username: str
 	first_name: Optional[str]
 	last_name: Optional[str]
-	phone_number: Optional[int]
+	phone_number: int
 	role: str
 	status: str
 	is_email_verified: bool
@@ -40,8 +40,9 @@ class UserOut(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str
+	phone_number: int
+    #email: EmailStr
+    #password: str
 class Token(BaseModel):
 	
     access_token: str
@@ -52,5 +53,12 @@ class loginOut(BaseModel):
 	token_type: str = "bearer"
 	user: UserOut
 	location: Optional[LocationOut] = []
+
+
+
+class OTPRequest(BaseModel):
+    phone_number: int
+    otp: str | None = None 
+
 
 	

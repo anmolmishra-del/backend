@@ -4,6 +4,7 @@ from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 
 # avoid module-level import to prevent circular imports
+from app.modules.locations.models import Loaction
 from app.modules.locations.schemas import  LocationCreate
 from app.modules.locations.services import create_location
 from app.modules.auth.security import  get_current_user
@@ -20,7 +21,7 @@ def log_location(location: LocationCreate, user: dict = Depends(get_current_user
         from app.modules.locations.models import Loaction
         session = SessionLocal()
         try:
-            # coerce to float to avoid DB type mismatches (clients may send strings)
+           
             try:
                 lat = float(location.latitude)
                 lon = float(location.longitude)
@@ -56,7 +57,7 @@ def log_location(location: LocationCreate, user: dict = Depends(get_current_user
 @router.get("/locations")
 def get_locations(user: dict = Depends(get_current_user)):
     from app.core.database import SessionLocal
-    from app.core.models import Loaction
+   
     session = SessionLocal()
     try:
         q = session.query(Loaction).filter(Loaction.user_id == user["id"])

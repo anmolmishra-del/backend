@@ -17,7 +17,6 @@ Base = declarative_base()
 
 class Restaurant(Base):
     __tablename__ = "restaurant"
-
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(256), unique=True, index=True, nullable=False)
     owner_id = Column(Integer, nullable=True, index=True)
@@ -35,7 +34,6 @@ class Restaurant(Base):
 
 class RestaurantLocation(Base):
     __tablename__ = "restaurant_location"
-
     id = Column(Integer, primary_key=True, index=True)
     restaurant_id = Column(Integer, ForeignKey("restaurant.id", ondelete="CASCADE"), nullable=False, index=True)
     latitude = Column(Float, nullable=False)
@@ -52,7 +50,6 @@ class RestaurantLocation(Base):
 
 class MenuCategory(Base):
     __tablename__ = "menu_category"
-
     id = Column(Integer, primary_key=True, index=True)
     restaurant_id = Column(Integer, ForeignKey("restaurant.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(128), nullable=False)
@@ -62,7 +59,6 @@ class MenuCategory(Base):
 
 class MenuItem(Base):
     __tablename__ = "menu_item"
-
     id = Column(Integer, primary_key=True, index=True)
     category_id = Column(Integer, ForeignKey("menu_category.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(256), nullable=False)
@@ -77,7 +73,6 @@ class MenuItem(Base):
 
 class FoodOrder(Base):
     __tablename__ = "food_order"
-
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, nullable=False, index=True)
     restaurant_id = Column(Integer, ForeignKey("restaurant.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -92,7 +87,6 @@ class FoodOrder(Base):
 
 class OrderItem(Base):
     __tablename__ = "order_item"
-
     id = Column(Integer, primary_key=True, index=True)
     order_id = Column(Integer, ForeignKey("food_order.id", ondelete="CASCADE"), nullable=False, index=True)
     menu_item_id = Column(Integer, ForeignKey("menu_item.id", ondelete="CASCADE"), nullable=False, index=True)

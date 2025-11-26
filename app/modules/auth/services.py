@@ -278,7 +278,7 @@ def get_user_by_username(username: str) -> Optional[dict]:
 # --------------------------
 # Get user by phone number
 # --------------------------
-def get_user_by_phone_number(phone_number: int) -> Optional[dict]:
+def get_user_by_phone_number(phone_number: str) -> Optional[dict]:
     try:
         from app.core.database import SessionLocal
         session = SessionLocal()
@@ -339,9 +339,7 @@ def _send_via_twilio(phone: int, message: str):
     """Send SMS using Twilio."""
     from twilio.rest import Client
     
-    account_sid = os.getenv("OR7f5b17e07fe593d65e0e25d2b5e128ff")
-    auth_token = os.getenv("55b25d3e12b4d952b4aa8ec3fc0d53c4")
-    from_number = os.getenv("+919848748739")
+  
 
     if not (account_sid and auth_token and from_number):
         raise RuntimeError("Twilio credentials not configured")
@@ -354,7 +352,7 @@ def _send_via_twilio(phone: int, message: str):
     )
 
 
-def send_otp(phone_number: int, expire_minutes: int = 5) -> bool:
+def send_otp(phone_number: str, expire_minutes: int = 5) -> bool:
     """
     Generate OTP (int), send SMS, and store in memory.
     """
@@ -367,9 +365,9 @@ def send_otp(phone_number: int, expire_minutes: int = 5) -> bool:
         # send SMS (convert to string only for sending)
         _send_via_twilio(phone_number, message)
 
-        # store as int
+     
         _otp_store[phone_number] = {
-            "code": code,
+            "code": str(code),
             "expires_at": expires_at
         }
 
@@ -386,11 +384,7 @@ def send_otp(phone_number: int, expire_minutes: int = 5) -> bool:
 
         return True
 
-
-def verify_otp(phone_number: int, otp_code: str) -> bool:
-    """
-    Verify OTP as integer.
-    """
+def verify_otp(phone_number: str, otp_code: str) -> bool:
     entry = _otp_store.get(phone_number)
     if not entry:
         return False
@@ -400,14 +394,14 @@ def verify_otp(phone_number: int, otp_code: str) -> bool:
         _otp_store.pop(phone_number, None)
         return False
 
-    # match
-    if entry["code"] == otp_code:
+    # compare as strings
+    if str(entry["code"]) == str(otp_code):
         _otp_store.pop(phone_number, None)
         return True
 
     return False
 
-def authenticate_user_by_phone_otp(phone_number: int, otp: int) -> Optional[dict]:
+def authenticate_user_by_phone_otp(phone_number: str, otp: str  ) -> Optional[dict]:
     ok = verify_otp(phone_number, otp)
     if not ok:
         return None

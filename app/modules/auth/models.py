@@ -16,7 +16,7 @@ class User(Base):
     last_name = Column(String(128), nullable=True)
     # Phone numbers can exceed integer range and may include formatting
     # characters (+, -, spaces). Store as string to be safe.
-    phone_number = Column(BigInteger, unique=True, nullable=True)
+    phone_number = Column(String(128), unique=True, nullable=True)
     role = Column(String(50), default="user", nullable=False)
     status = Column(String(50), default="active", nullable=False)
     is_email_verified = Column(Boolean, default=False, nullable=False)

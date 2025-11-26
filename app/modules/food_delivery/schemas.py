@@ -1,14 +1,14 @@
 
 
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 
 
 class CreateResturant(BaseModel):
     name: str
     address: str
-    phone_number: int
+    phone_number: str | None = None   # allow +, spaces, etc.
     owner_id: int
-    email: str
+    email: EmailStr | None = None
     cuisine_type: str
     logo_url: str | None = None
     banner_url: str | None = None       

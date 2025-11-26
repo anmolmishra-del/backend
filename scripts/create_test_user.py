@@ -1,12 +1,12 @@
 import sys
 import os
-
+from app.modules.auth.schemas import UserCreate
 # Allow importing app package
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from app.modules.auth.schemas import UserCreate
+
 from app.modules.auth.services import create_user
 
 u = UserCreate(username="testuser", password="TestPass123!", email="testuser@example.com", roles=["user"]) 

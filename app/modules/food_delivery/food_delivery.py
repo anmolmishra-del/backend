@@ -1,16 +1,18 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from requests import Session
 from app.modules.auth.security import get_current_user
 
 from app.core.database import SessionLocal
-from app.modules.food_delivery.model import MenuCategory, Restaurant, RestaurantLocation
-from app.modules.food_delivery.schemas import CreateResturant, MenuCategory, ResturantLocation, ResturantLocation
+from app.modules.food_delivery.model import  Restaurant, RestaurantLocation
+from app.modules.food_delivery.schemas import CreateRestaurant 
 
-
+from app.modules.food_delivery import model as m
+from app.modules.food_delivery import schemas as s
 router = APIRouter(prefix="/food_delivery", tags=["food_delivery"])
 
 
 @router.post("/restaurants")
-def create_restaurant(payload: CreateResturant,
+def create_restaurant(payload: CreateRestaurant,
                        #user: dict = Depends(get_current_user)
                        ):
 
@@ -20,16 +22,15 @@ def create_restaurant(payload: CreateResturant,
         phone = str(payload.phone_number) if getattr(payload, "phone_number", None) is not None else None
 
      
-        try:
-            lat = float(payload.latitude)
-            lon = float(payload.longitude)
-        except Exception:
-            raise HTTPException(status_code=400, detail="latitude and longitude must be numeric")
+        # try:
+        #     lat = float(payload.latitude)
+        #     lon = float(payload.longitude)
+        # except Exception:
+        #     raise HTTPException(status_code=400, detail="latitude and longitude must be numeric")
 
      
         db_rest = Restaurant(
             name=payload.name,
-            description=getattr(payload, "description", None),
             owner_id=payload.owner_id,
             cuisine_type=getattr(payload, "cuisine_type", None),
             phone_number=phone,
@@ -41,15 +42,21 @@ def create_restaurant(payload: CreateResturant,
         )
 
         session.add(db_rest)
-        # flush so db_rest.id becomes available without committing yet
+       
         session.flush()
 
-        # Create restaurant location linked to the created restaurant
+       
         loc = RestaurantLocation(
             restaurant_id=db_rest.id,
-            latitude=lat,
-            longitude=lon,
-            address=getattr(payload, "address", None),
+            latitude=payload.location.latitude,
+            longitude=payload.location.longitude,
+            address=payload.location.address,
+            city=payload.location.city,
+            state=payload.location.state,
+            country=payload.location.country,
+            postal_code=payload.location.postal_code,
+            location_id=payload.location.location_id,
+            dining_type=payload.location.dining_type
         )
         session.add(loc)
 
@@ -79,44 +86,19 @@ def create_restaurant(payload: CreateResturant,
         session.close()
 
 
-@router.post("/restaurants/location")
-def add_restaurant_location(restaurant_id: int, payload: ResturantLocation):
-    session = SessionLocal()
+
+@router.post("/menu/category")
+def create_menu_category(payload: s.MenuCategoryCreate):
+    session: Session = SessionLocal()
     try:
-        # Validate restaurant exists
-        rest = session.query(Restaurant).filter(Restaurant.id == restaurant_id).first()
-        if not rest:
+       
+        restaurant = session.query(m.Restaurant).filter(m.Restaurant.id == payload.restaurant_id).first()
+        if not restaurant:
             raise HTTPException(status_code=404, detail="Restaurant not found")
 
-        location = RestaurantLocation(
-            restaurant_id=restaurant_id,
-            latitude=payload.latitude,
-            longitude=payload.longitude,
-            address=payload.address,
-            city=payload.city,
-            state=payload.state,
-            country=payload.country,
-            postal_code=payload.postal_code,
-            location_id=payload.location_id,
-            dining_type=payload.dining_type
-        )
-
-        session.add(location)
-        session.commit()
-
-        return {"message": "Location added successfully"}
-
-    except Exception as exc:
-        session.rollback()
-        raise HTTPException(status_code=500, detail=str(exc))
-    finally:
-        session.close()
-@router.post("/menu/category")
-def create_menu_category(payload: MenuCategory):
-    session = SessionLocal()
-    try:
-        category = MenuCategory(
-            restaurant_id=payload.resturant_id,
+       
+        category = m.MenuCategory(
+            restaurant_id=payload.restaurant_id,
             name=payload.name,
             description=payload.description
         )
@@ -127,35 +109,167 @@ def create_menu_category(payload: MenuCategory):
 
         return {"category_id": category.id, "message": "Category added"}
 
+    except HTTPException:
+        # re-raise fastapi HTTP exceptions
+        session.rollback()
+        raise
     except Exception as exc:
         session.rollback()
         raise HTTPException(status_code=500, detail=str(exc))
     finally:
         session.close()
 
-# @router.post("/menu/item")
-# def create_menu_item(payload: MenuItem):
-#     session = SessionLocal()
-#     try:
-#         item = MenuItem(
-#             category_id=payload.category_id,
-#             name=payload.name,
-#             description=payload.description,
-#             price=payload.price,
-#             is_available=payload.is_available,
-#             image_url=payload.image_url,
-#             is_vegetarian=payload.is_vegetarian,
-#             cooking_time_minutes=payload.cooking_time_minutes
-#         )
+@router.post("/menu/item")
+def create_menu_item(payload: s.MenuItemCreate):
+    session = SessionLocal()
+    
+    try:
+        restaurant = session.query(m.Restaurant).filter(m.Restaurant.id == payload.restaurant_id).first()
+        if not restaurant:
+            raise HTTPException(status_code=404, detail="Restaurant not found")
+        # category = session.query(m.MenuCategory).filter(m.MenuCategory.id == payload.category_id,
+        #                                                m.MenuCategory.restaurant_id == payload.restaurant_id).first()
+        item = m. MenuItem(
+            category_id=payload.category_id,
+            restaurant_id=payload.restaurant_id,
+            name=payload.name,
+            description=payload.description,
+            price=payload.price,
+            is_available=payload.is_available,
+            image_url=payload.image_url,
+            is_vegetarian=payload.is_vegetarian,
+            cooking_time_minutes=payload.cooking_time_minutes
+        )
 
-#         session.add(item)
-#         session.commit()
-#         session.refresh(item)
+        session.add(item)
+        session.commit()
+        session.refresh(item)
 
-#         return {"item_id": item.id, "message": "Menu item created"}
+        return {"item_id": item.id, "message": "Menu item created"}
 
-#     except Exception as exc:
-#         session.rollback()
-#         raise HTTPException(status_code=500, detail=str(exc))
-#     finally:
-#         session.close()
+    except Exception as exc:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        session.close()
+
+@router.get("/restaurants/{restaurant_id}")
+def get_restaurant(restaurant_id: int):
+    session = SessionLocal()
+    try:
+        restaurant = session.query(m.Restaurant).filter(m.Restaurant.id == restaurant_id).first()
+        if not restaurant:
+            raise HTTPException(status_code=404, detail="Restaurant not found")
+
+        res = {
+            "id": restaurant.id,
+            "name": restaurant.name,
+            "cuisine_type": restaurant.cuisine_type,
+            "phone_number": restaurant.phone_number,
+            "email": restaurant.email,
+            "logo_url": restaurant.logo_url,
+            "banner_url": restaurant.banner_url,
+            "status": restaurant.status,
+            "is_favorite": restaurant.is_favorite,
+            "created_at": restaurant.created_at,
+            "locations": [],
+            "categories": [],
+        }
+        for loc in restaurant.locations:
+             res["locations"].append({
+                "id": loc.id,
+                "latitude": loc.latitude,
+                "longitude": loc.longitude,
+                "address": loc.address,
+                "city": loc.city,
+                "state": loc.state,
+                "country": loc.country,
+                "postal_code": loc.postal_code,
+                "location_id": loc.location_id,
+                "dining_type": loc.dining_type,
+                "created_at": loc.created_at
+            })
+        for cat in restaurant.categories:
+            cat_data = {
+                "id": cat.id,
+                "name": cat.name,
+                "description": cat.description,
+                "created_at": cat.created_at,
+                "items": []
+            }
+            for item in cat.items:
+                cat_data["items"].append({
+                    "id": item.id,
+                    "name": item.name,
+                    "description": item.description,
+                    "price": item.price,
+                    "is_available": item.is_available,
+                    "image_url": item.image_url,
+                    "is_vegetarian": item.is_vegetarian,
+                    "cooking_time_minutes": item.cooking_time_minutes,
+                    "created_at": item.created_at
+                })  
+            res["categories"].append(cat_data)
+
+            return res
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        session.close()
+
+@router.get("/all_restaurants")
+def get_all_restaurants():
+    session = SessionLocal()
+    try:
+        restaurants = session.query(m.Restaurant).all()
+        res_list = []
+        for restaurant in restaurants:
+            res_list.append({
+                "id": restaurant.id,
+                "name": restaurant.name,
+                "cuisine_type": restaurant.cuisine_type,
+                "phone_number": restaurant.phone_number,
+                "email": restaurant.email,
+                "logo_url": restaurant.logo_url,
+                "banner_url": restaurant.banner_url,
+                "status": restaurant.status,
+                "is_favorite": restaurant.is_favorite,
+                "created_at": restaurant.created_at
+            })
+        return res_list
+
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        session.close()    
+
+
+router.get("/all_items")  
+def get_all_menu_items():
+    session = SessionLocal()
+    try:
+        items = session.query(m.MenuItem).all()
+        item_list = []
+        for item in items:
+            item_list.append({
+                "id": item.id,
+                "name": item.name,
+                "description": item.description,
+                "price": item.price,
+                "is_available": item.is_available,
+                "image_url": item.image_url,
+                "is_vegetarian": item.is_vegetarian,
+                "cooking_time_minutes": item.cooking_time_minutes,
+                "created_at": item.created_at
+            })
+        return item_list
+
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        session.close()
+
+       

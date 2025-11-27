@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from sqladmin import Admin
 from app.modules.admin.views.locations import locationAdmin
+from app.modules.admin.views.resturant import MenuCategoryAdmin, MenuItemAdmin, RestaurantAdmin, RestaurantLocatinAdmin
 from app.modules.admin.views.users import UserAdmin
 from app.modules.auth import router as auth_router
 from app.modules.admin import router as admin_router
@@ -20,6 +21,11 @@ def root():
 admin = Admin(app=app, engine=engine, title="User Admin Panel", base_url="/admin")
 admin.add_view(UserAdmin)
 admin.add_view(locationAdmin)
+admin.add_view(RestaurantAdmin)
+admin.add_view(RestaurantLocatinAdmin)
+admin.add_view(MenuCategoryAdmin)
+admin.add_view(MenuItemAdmin)
+
 app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(locations_router)

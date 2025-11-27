@@ -10,6 +10,7 @@ from app.modules.admin import router as admin_router
 from app.modules.food_delivery import food_delivery
 from app.modules.locations import router as locations_router
 from app.core.database import engine
+from app.modules.order_address_list import address_list_routes
 
 
 app = FastAPI(title="User Management API", version="1.0.0")
@@ -31,7 +32,7 @@ app.include_router(admin_router)
 app.include_router(locations_router)
 
 app.include_router(food_delivery.router)
-
+app.include_router(address_list_routes.router)
 
 @app.on_event("startup")
 async def on_startup():

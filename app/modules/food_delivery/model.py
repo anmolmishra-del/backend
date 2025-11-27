@@ -17,8 +17,8 @@ from sqlalchemy import (
     DateTime,
 )
 from sqlalchemy.orm import declarative_base, relationship
+from app.core.database import Base
 
-Base = declarative_base()
 
 
 class Restaurant(Base):
@@ -63,7 +63,11 @@ class Restaurant(Base):
         cascade="all, delete-orphan",
         lazy="select",
     )
-
+    # addresses = relationship(
+    #     "app.modules.order_address_list.models.Address",
+    #     back_populates="restaurant",
+    #     cascade="all, delete-orphan"
+    # )
 
 class RestaurantLocation(Base):
     __tablename__ = "restaurant_location"

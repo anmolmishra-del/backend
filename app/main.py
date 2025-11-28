@@ -27,6 +27,7 @@ admin.add_view(RestaurantLocatinAdmin)
 admin.add_view(MenuCategoryAdmin)
 admin.add_view(MenuItemAdmin)
 
+
 app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(locations_router)

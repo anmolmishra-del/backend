@@ -1,13 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from requests import Session
+from sqlalchemy import insert
 from app.modules.auth.security import get_current_user
 
 from app.core.database import SessionLocal
 from app.modules.food_delivery.model import  Restaurant, RestaurantLocation
-from app.modules.food_delivery.schemas import CreateRestaurant 
+from app.modules.food_delivery.schemas import CreateRestaurant, FoodOrderCreate, format_address 
 
 from app.modules.food_delivery import model as m
 from app.modules.food_delivery import schemas as s
+from app.modules.order_address_list.models import Address
 router = APIRouter(prefix="/food_delivery", tags=["food_delivery"])
 
 
@@ -31,7 +33,7 @@ def create_restaurant(payload: CreateRestaurant,
      
         db_rest = Restaurant(
             name=payload.name,
-            owner_id=payload.owner_id,
+            
             cuisine_type=getattr(payload, "cuisine_type", None),
             phone_number=phone,
             email=getattr(payload, "email", None),
@@ -41,9 +43,19 @@ def create_restaurant(payload: CreateRestaurant,
             is_favorite=bool(getattr(payload, "is_favorite", False)),
         )
 
+
         session.add(db_rest)
        
         session.flush()
+        # many-to-many: associate categories
+        from app.modules.food_delivery.model import restaurant_category
+        rest_categories = (
+            insert(restaurant_category).values([
+                {"restaurant_id": db_rest.id, "category_id": cat_id}
+                for cat_id in (payload.categories_id or [])
+            ])
+        )
+        session.execute(rest_categories)
 
        
         loc = RestaurantLocation(
@@ -92,13 +104,13 @@ def create_menu_category(payload: s.MenuCategoryCreate):
     session: Session = SessionLocal()
     try:
        
-        restaurant = session.query(m.Restaurant).filter(m.Restaurant.id == payload.restaurant_id).first()
-        if not restaurant:
-            raise HTTPException(status_code=404, detail="Restaurant not found")
+        # restaurant = session.query(m.Restaurant).filter(m.Restaurant.id == payload.restaurant_id).first()
+        # if not restaurant:
+        #     raise HTTPException(status_code=404, detail="Restaurant not found")
 
        
         category = m.MenuCategory(
-            restaurant_id=payload.restaurant_id,
+          #  restaurant_id=payload.restaurant_id,
             name=payload.name,
             description=payload.description
         )
@@ -153,7 +165,7 @@ def create_menu_item(payload: s.MenuItemCreate):
     finally:
         session.close()
 
-@router.get("/restaurants/{restaurant_id}")
+@router.get("/restaurants_data/{restaurant_id}")
 def get_restaurant(restaurant_id: int):
     session = SessionLocal()
     try:
@@ -211,7 +223,7 @@ def get_restaurant(restaurant_id: int):
                 })  
             res["categories"].append(cat_data)
 
-            return res
+        return res
 
     except HTTPException:
         raise
@@ -272,4 +284,59 @@ def get_all_menu_items():
     finally:
         session.close()
 
-       
+@router.post("/food_order")
+def create_food_order(payload: FoodOrderCreate) -> dict:
+    """
+    payload: FoodOrderCreate
+    SessionLocal: SQLAlchemy session factory (callable)
+    m: module containing ORM models (MenuItem, FoodOrder, FoodOrderItem, Restaurant)
+    """
+    # collect menu item ids
+    menu_item_ids = [it.menu_item_id for it in payload.items]
+    if not menu_item_ids:
+        raise HTTPException(status_code=400, detail="No order items provided")
+
+    # Use session context manager if available
+    with SessionLocal() as session:  # assumes SessionLocal() returns a context-manageable Session
+        try:
+            # validate that all menu items belong to the same restaurant
+            restaurant_id = session.query(m.MenuItem.restaurant_id).filter(m.MenuItem.id.in_(menu_item_ids) and m.MenuItem.restaurant_id == payload.restaurant_id).first()
+            if not restaurant_id:
+                raise HTTPException(status_code=400, detail="Invalid menu items")
+
+            address = session.query(Address).filter(Address.user_id == payload.user_id and Address.is_default == True).first()
+            delivery_addr_str = format_address(address) if payload.delivery_address else None
+
+            # create order
+            food_order = m.FoodOrder(
+                user_id=payload.user_id,
+                restaurant_id=payload.restaurant_id,
+                total_amount=payload.total_amount,
+                delivery_address=delivery_addr_str,
+                delivery_instructions=payload.delivery_instructions,
+            )
+            session.add(food_order)
+            session.flush()  # populate food_order.id
+
+            # create all order items
+            order_items = [
+                m.FoodOrderItem(
+                    order_id=food_order.id,
+                    menu_item_id=item.menu_item_id,
+                    quantity=item.quantity,
+                )
+                for item in payload.items
+            ]
+            session.add_all(order_items)
+
+            session.commit()
+            session.refresh(food_order)
+
+            return {"order_id": food_order.id, "message": "Food order placed successfully"}
+
+        except HTTPException:
+            session.rollback()
+            raise
+        except Exception as exc:
+            session.rollback()
+            raise HTTPException(status_code=500, detail=str(exc))

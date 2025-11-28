@@ -1,11 +1,4 @@
 
-"""
-Cleaned and complete SQLAlchemy models for the food_delivery module.
-Includes relationships and sensible back_populates so you can eager-load nested objects
-and return nested Pydantic models easily.
-
-Drop this file into: app/modules/food_delivery/model.py
-"""
 from datetime import datetime
 from sqlalchemy import (
     Boolean,
@@ -15,10 +8,18 @@ from sqlalchemy import (
     Integer,
     String,
     DateTime,
+    Table,
 )
-from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.orm import relationship
 from app.core.database import Base
 
+
+restaurant_category = Table(
+    "restaurant_category",
+    Base.metadata,
+    Column("restaurant_id", Integer, ForeignKey("restaurant.id"), primary_key=True),
+    Column("category_id", Integer, ForeignKey("menu_category.id"), primary_key=True),
+)
 
 
 class Restaurant(Base):
@@ -26,7 +27,7 @@ class Restaurant(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(256), unique=True, index=True, nullable=False)
-    owner_id = Column(Integer, nullable=True, index=True)
+   
     cuisine_type = Column(String(128), nullable=True)
     phone_number = Column(String(50), nullable=True)
     email = Column(String(256), unique=True, index=True, nullable=True)
@@ -37,14 +38,17 @@ class Restaurant(Base):
     is_favorite = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-
-    # relationships
+    
+    
+   
     categories = relationship(
         "MenuCategory",
-        back_populates="restaurant",
-        cascade="all, delete-orphan",
+        secondary=restaurant_category,
+        back_populates="restaurants",
         lazy="select",
     )
+
+    # one-to-many relationships
     locations = relationship(
         "RestaurantLocation",
         back_populates="restaurant",
@@ -63,11 +67,7 @@ class Restaurant(Base):
         cascade="all, delete-orphan",
         lazy="select",
     )
-    # addresses = relationship(
-    #     "app.modules.order_address_list.models.Address",
-    #     back_populates="restaurant",
-    #     cascade="all, delete-orphan"
-    # )
+
 
 class RestaurantLocation(Base):
     __tablename__ = "restaurant_location"
@@ -93,25 +93,31 @@ class MenuCategory(Base):
     __tablename__ = "menu_category"
 
     id = Column(Integer, primary_key=True, index=True)
-    restaurant_id = Column(Integer, ForeignKey("restaurant.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(128), nullable=False)
     description = Column(String(512), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
-    # relationships
-    restaurant = relationship("Restaurant", back_populates="categories")
+    # many-to-many back to restaurants
+    restaurants = relationship(
+        "Restaurant",
+        secondary=restaurant_category,
+        back_populates="categories",
+        lazy="select",
+    )
+
+    # one-to-many to items
     items = relationship(
         "MenuItem",
         back_populates="category",
-        cascade="all, delete-orphan",
         lazy="select",
     )
 
 
 class MenuItem(Base):
     __tablename__ = "menu_item"
-    restaurant_id = Column(Integer, ForeignKey("restaurant.id", ondelete="CASCADE"), nullable=False, index=True)
+
     id = Column(Integer, primary_key=True, index=True)
+    restaurant_id = Column(Integer, ForeignKey("restaurant.id", ondelete="CASCADE"), nullable=False, index=True)
     category_id = Column(Integer, ForeignKey("menu_category.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(256), nullable=False)
     description = Column(String(1024), nullable=True)
@@ -122,8 +128,7 @@ class MenuItem(Base):
     cooking_time_minutes = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
-    # relationship back to category
-   
+    # relationship back to restaurant and category
     restaurant = relationship("Restaurant", back_populates="items")
     category = relationship("MenuCategory", back_populates="items")
 

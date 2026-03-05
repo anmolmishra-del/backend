@@ -14,8 +14,6 @@ class User(Base):
     hashed_password = Column(String(256), nullable=False)
     first_name = Column(String(128), nullable=True)
     last_name = Column(String(128), nullable=True)
-    # Phone numbers can exceed integer range and may include formatting
-    # characters (+, -, spaces). Store as string to be safe.
     phone_number = Column(String(128), unique=True, nullable=True)
     role = Column(String(50), default="user", nullable=False)
     status = Column(String(50), default="active", nullable=False)
@@ -24,4 +22,5 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     last_login = Column(DateTime, nullable=True)
+
     

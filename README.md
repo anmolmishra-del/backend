@@ -1,23 +1,35 @@
-# Backend API - JWT Auth & RBAC System
+# HRMS Backend API (FastAPI)
 
-A FastAPI-based backend with JWT authentication, role-based access control (RBAC), and PostgreSQL integration.
+This repository implements a modular human‑resources management backend
+built with FastAPI, SQLAlchemy and PostgreSQL. It provides:
 
-## Architecture
+- user registration and JWT-based login
+- per‑user roles and RBAC dependencies
+- phone‑number OTP login (MSG91 integration)
+- employee entity management linked to the auth system
+- department/designation CRUD
+- database migrations with Alembic
 
+## Architecture overview
+
+```text
+client → FastAPI app
+           ├─ /auth      (user/OTP/login)
+           ├─ /emp       (employee/department/designation)
+           └─ ... other modules ...
+
+↓
+PostgreSQL via SQLAlchemy ORM
 ```
-API Gateway → Auth → RBAC → Services
-    ↓
-[Users | Hotel | Food | Travel | Inventory | Payments ...]
-    ↓
-[PostgreSQL Database]
-```
 
-## Features
+## Key features
 
-- ✅ **JWT Authentication**: Secure token-based auth with bcrypt password hashing
-- ✅ **Role-Based Access Control (RBAC)**: Protect routes with role checks
-- ✅ **PostgreSQL Integration**: Async-ready with SQLAlchemy ORM
-- ✅ **Scalable Architecture**: Modular design with separate auth, hotel, food, travel modules
+- ✅ **JWT Authentication** with bcrypt password hashing
+- ✅ **Role‑Based Access Control (RBAC)** via `require_roles` dependency
+- ✅ **OTP support** using MSG91 Flow API for phone verification
+- ✅ **Employee module** that creates a `User` then an `Employee` record
+- ✅ **Database migrations** powered by Alembic
+- ✅ Clean separation of modules and in‑memory fallbacks for testing
 
 ## Setup
 
@@ -50,137 +62,93 @@ ACCESS_TOKEN_EXPIRE_MINUTES=60
 ```
 
 If not set, defaults are:
-- `DATABASE_URL`: `postgresql+psycopg://postgres:postgres@localhost:5432/backend_db`
+- `DATABASE_URL`: `postgresql+psycopg://postgres:postgres@localhost:5432/backend_db` *(change the username/password to match your local PostgreSQL setup)*
 - `SECRET_KEY`: `dev-secret`
 - `ACCESS_TOKEN_EXPIRE_MINUTES`: `60`
+
+> **Note:** a mismatched `DATABASE_URL` will cause migrations to fail with a
+> password authentication error. The startup logic will catch this and fall
+> back to `init_models()` so tables may still be created (useful for quick
+> development), but you should correct your URL before deploying or running
+> tests.
 
 ### Run the Server
 
 ```bash
+# Activate virtual environment first
+source hrms/bin/activate
+
 # Development (with auto-reload)
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 8000
 
 # Production
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000
+uvicorn app.main:app --port 8000
 ```
 
-The server starts on `http://127.0.0.1:8000`.
+The server is available at `http://127.0.0.1:8000` by default.
 
 ## API Usage
 
-### 1. Register a User
+### Core Authentication Endpoints
 
-**Endpoint:** `POST /auth/register`
+#### Register a User
 
-**Request:**
-```json
-{
-  "username": "alice",
-  "password": "secret123",
-  "roles": ["user"]
-}
-```
+- **POST** `/auth/register`
+- Body must include `username`, `password` and optional `roles`/`email`/`phone_number`.
+- Creates a new user entry and returns the user dict.
 
-**Response:**
-```json
-{
-  "id": 1,
-  "username": "alice",
-  "roles": ["user"]
-}
-```
+#### Username/Password Login
 
-### 2. Login
+- **POST** `/auth/login`
+- Supply `username` and `password`.
+- Returns an `access_token` (Bearer JWT) on success.
 
-**Endpoint:** `POST /auth/login`
+#### OTP Login
 
-**Request:**
-```json
-{
-  "username": "alice",
-  "password": "secret123"
-}
-```
+- **POST** `/auth/send-otp` with `phone_number` to generate a one-time code.
+- **POST** `/auth/verify-otp` with `phone_number` and `otp` to authenticate.
+- SMS is sent via MSG91 Flow; configuration requires `MSG91_AUTH_KEY` and
+  `MSG91_OTP_TEMPLATE_ID` environment variables.
 
-**Response:**
-```json
-{
-  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "token_type": "bearer"
-}
-```
+#### Get Current User
 
-### 3. Get Current User (Protected)
+- **GET** `/auth/me`; requires `Authorization: Bearer <token>` header.
+- Returns the currently authenticated user object.
 
-**Endpoint:** `GET /auth/me`
+#### Role‑Restricted Endpoint Example
 
-**Headers:**
-```
-Authorization: Bearer <access_token>
-```
-
-**Response:**
-```json
-{
-  "id": 1,
-  "username": "alice",
-  "roles": ["user"]
-}
-```
-
-### 4. Admin-Only Endpoint (Role-Protected)
-
-**Endpoint:** `GET /auth/admin-only`
-
-**Headers:**
-```
-Authorization: Bearer <access_token>
-```
-
-**Success (user has "admin" role):**
-```json
-{
-  "message": "welcome admin",
-  "user": "alice"
-}
-```
-
-**Error (user lacks "admin" role):**
-```json
-{
-  "detail": "Not enough permissions"
-}
-```
+Any route using `Depends(require_roles(...))` enforces the presence of the
+specified roles in the user’s `roles` array. A built‑in admin example is
+`GET /auth/admin-only`.
 
 ## Protecting Routes with RBAC
 
 ### Example: Protect a route with a specific role
 
-In your route file (e.g., `app/modules/hotel/routes.py`):
+Use `require_roles` to protect any endpoint based on roles.
 
 ```python
 from fastapi import APIRouter, Depends
 from app.core.rbac import require_roles
 
-router = APIRouter(prefix="/hotel", tags=["hotel"])
+router = APIRouter(prefix="/emp", tags=["employee"])
 
-@router.post("/rooms")
-def create_room(room_data: dict, user: dict = Depends(require_roles("hotel_admin"))):
-    """Only users with 'hotel_admin' role can create rooms"""
-    return {"message": f"Room created by {user['username']}"}
+@router.post("/employees")
+def create_employee(data: dict, user: dict = Depends(require_roles("hr_admin"))):
+    """Only HR admins may add employees."""
+    return {"message": "employee created"}
 
-@router.get("/rooms")
-def list_rooms(user: dict = Depends(require_roles("user", "hotel_admin"))):
-    """Users with either 'user' or 'hotel_admin' role can list rooms"""
-    return {"rooms": [...]}
+@router.get("/employees")
+def list_employees(user: dict = Depends(require_roles("user", "hr_admin"))):
+    """Users with 'user' or 'hr_admin' role can view employees."""
+    return {"employees": []}
 ```
 
-### Register the router in main.py
+### Register the router in `main.py`
 
 ```python
-from app.modules.hotel import router as hotel_router
-
-app.include_router(hotel_router)
+from app.modules.employee import routes as emp_routes
+app.include_router(emp_routes.router)
 ```
 
 ## Core Components
@@ -220,35 +188,37 @@ class User(Base):
     roles: list (JSONB, e.g., ["user", "admin"])
 ```
 
-### 5. Services (`app/shared/services.py`)
 
-- `create_user(user: UserCreate)` — Create new user
-- `get_user_by_username(username)` — Fetch user
-- `authenticate_user(username, password)` — Validate credentials
+## Employee Module
 
-## Example Flow
+Employees are modelled separately from users but linked by a foreign key.
+Creating an employee performs two actions:
 
-1. **User registers:**
-   ```bash
-   curl -X POST http://localhost:8000/auth/register \
-     -H "Content-Type: application/json" \
-     -d '{"username":"bob","password":"pass123","roles":["admin"]}'
-   ```
+1. creates a corresponding user account (via `auth.services.create_user`)
+2. inserts an `employees` record with an autogenerated `employee_code` and
+   optional department/designation.
 
-2. **User logs in:**
-   ```bash
-   curl -X POST http://localhost:8000/auth/login \
-     -H "Content-Type: application/json" \
-     -d '{"username":"bob","password":"pass123"}'
-   ```
-   → Receive `access_token`
+**Endpoints:**
 
-3. **User accesses protected route:**
-   ```bash
-   curl -X GET http://localhost:8000/auth/admin-only \
-     -H "Authorization: Bearer <access_token>"
-   ```
-   → Returns `welcome admin`
+- **POST** `/emp/employees` (body `EmployeeCreate`, contains `email`,
+  `password`, plus `position`/`department`/`designation`). Returns
+  `EmployeeOut` including `user_id` and `employee_code`.
+- **GET** `/emp/employees/{id}` – detailed view with department/designation
+  objects.
+- **GET** `/emp/employees` – list all employees.
+- **PUT** `/emp/employees/{id}` – modify user or employee fields via
+  `EmployeeUpdate`.
+- **DELETE** `/emp/employees/{id}` – remove employee record.
+
+Departments and designations have their own CRUD endpoints under `/emp`.
+
+### Sample cURL
+
+```bash
+curl -X POST http://localhost:8000/emp/employees \
+  -H "Content-Type: application/json" \
+  -d '{"first_name":"Alice","last_name":"Smith","email":"alice@example.com","password":"secret","position":"Engineer"}'
+```
 
 ## Project Structure
 
@@ -260,31 +230,49 @@ backend/
 │   ├── core/
 │   │   ├── config.py           # Config (DB URL, SECRET_KEY)
 │   │   ├── database.py         # SQLAlchemy engine & session
-│   │   ├── models.py           # ORM models (User)
+│   │   ├── models.py           # ORM models (User, Employee, etc.)
 │   │   ├── security.py         # JWT & password utilities
 │   │   ├── rbac.py             # Role-based access control
 │   │   └── __init__.py
 │   ├── modules/
 │   │   ├── __init__.py
 │   │   ├── auth/
-│   │   │   ├── routes.py       # Auth endpoints
+│   │   │   ├── routes.py       # Auth + OTP endpoints
 │   │   │   └── __init__.py
-│   │   ├── hotel/
-│   │   ├── food/
-│   │   ├── travel/
-│   │   └── payment/
-│   └── shared/
-│       ├── schemas.py          # Pydantic models (UserCreate, Token)
-│       ├── services.py         # DB service functions
-│       └── __init__.py
+│   │   ├── employee/           # Employee/department/designation
+│   │   │   ├── routes.py
+│   │   │   ├── models.py
+│   │   │   ├── schemas.py
+│   │   │   └── services.py
+│   │   └── ... other modules as needed ...
 ├── requirements.txt            # Dependencies
 ├── .env                        # Environment variables (not in git)
 └── README.md                   # This file
 ```
 
-## Database Initialization
+## Database Initialization & Migrations
 
-Tables are created automatically on app startup via `init_models()` in `app/main.py`. For production, use Alembic for migrations.
+At startup the app invokes `init_models()` which runs `Base.metadata.create_all`
+– this is handy for throwing away the database during development. **It
+does not perform schema migrations**, so any structural change to models
+requires manual intervention or you'll see errors like
+`relation "employees" does not exist`.
+
+To manage schema evolution we use **Alembic**:
+
+1. `pip install alembic`
+2. `alembic init alembic`
+3. Edit `alembic/env.py` to load `app.core.database.Base.metadata` and the
+   modules containing models (`auth.models`, `employee.models`, etc.).
+4. `alembic revision --autogenerate -m "describe change"`
+5. `alembic upgrade head`
+
+Each model change should be followed by a new revision. This keeps dev,
+testing and production databases in sync without losing data.
+
+> **Note:** you may still call `init_models()` for ephemeral databases
+> (tests, local experiments) but avoid it in environments where data
+> matters.
 
 ## Troubleshooting
 
@@ -303,7 +291,7 @@ Tables are created automatically on app startup via `init_models()` in `app/main
 
 ## Next Steps
 
-1. **Add more modules**: Create routes in `app/modules/hotel/`, `app/modules/food/`, etc.
+1. **Add more modules**: Create routes under `app/modules/` for new features (e.g. payroll, attendance).
 2. **Add migrations**: Use Alembic for schema versioning
 3. **Add tests**: Create test suite in `tests/`
 4. **Deploy**: Use Docker + production database

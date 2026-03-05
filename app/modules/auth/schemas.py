@@ -3,9 +3,6 @@ from pydantic import BaseModel, EmailStr, validator
 from typing import List, Optional
 from datetime import datetime
 
-from app.modules.locations.models import Loaction
-from app.modules.locations.schemas import LocationOut
-
 
 
 
@@ -52,7 +49,6 @@ class loginOut(BaseModel):
 	access_token: str
 	token_type: str = "bearer"
 	user: UserOut
-	location: Optional[LocationOut] = []
 
 
 

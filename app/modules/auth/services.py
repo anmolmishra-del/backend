@@ -7,6 +7,7 @@ from sqlalchemy import select, true
 
 # Import User model at module level (models are safe)
 from app.modules.auth.models import User
+from app.core.config import auth_key, otp_template_id
 
 # in-memory fallback stores (for development/testing)
 _memory_users: Dict[str, Dict[str, Any]] = {}
@@ -137,7 +138,23 @@ def get_user_by_username(username: str) -> Optional[dict]:
     except Exception:
         return _memory_users.get(username)
 
-
+def get_user_by_id(user_id: int) -> Optional[dict]: 
+    try:
+        from app.core.database import SessionLocal
+        session = SessionLocal()
+        try:
+            q = select(User).where(User.id == user_id)
+            db_user = session.execute(q).scalars().first()
+            if not db_user:
+                return None
+            return _user_to_dict(db_user)
+        finally:
+            session.close()
+    except Exception:
+        for u in _memory_users.values():
+            if u.get("id") == user_id:
+                return u
+        return None
 # --------------------------
 # Get user by phone number
 # --------------------------
@@ -185,25 +202,67 @@ def authenticate_user_by_phone_number(phone_number: str) -> Optional[dict]:
 # --------------------------
 # OTP helpers (in same file)
 # --------------------------
-def _generate_otp(length: int = 6) -> int:
+def _generate_otp(length: int = 4) -> int:
     start = 10 ** (length - 1)
     end = (10 ** length) - 1
     return randint(start, end)
 
+def _send_via_msg91(phone: str, template_id: str, otp: str, validatetime: str):
+    import requests
 
-def _send_via_twilio(phone: str, message: str):
+    url = "https://api.msg91.com/api/v2/flow"
+
+    payload = {
+        "template_id": template_id,
+        "short_url": "0",
+        "recipients": [
+            {
+                "mobiles": f"91{phone}",
+                "otp": otp,
+                "validatetime": validatetime
+            }
+        ]
+    }
+
+    headers = {
+        "authkey": auth_key,
+        "content-type": "application/json"
+    }
+
+    response = requests.post(url, json=payload, headers=headers)
+
+    print(response.status_code)
+    print(response.text)
+
+    return response.json()
+# def _send_via_twilio(phone: str, message: str):
     """Send SMS using Twilio. Local import to avoid extra top-level deps."""
-    try:
-        from twilio.rest import Client
-    except Exception as e:
-        raise RuntimeError("twilio package not available") from e
+    # try:
+    #     from twilio.rest import Client
+    # except Exception as e:
+    #     raise RuntimeError("twilio package not available") from e
 
   
-    if not (account_sid and auth_token and from_number):
-        raise RuntimeError("Twilio credentials not configured")
+    # if not (account_sid and auth_token and from_number):
+    #     raise RuntimeError("Twilio credentials not configured")
 
-    client = Client(account_sid, auth_token)
-    client.messages.create(body=message, from_=from_number, to=str(phone))
+    # client = Client(account_sid, auth_token)
+    # client.messages.create(body=message, from_=from_number, to=str(phone))
+
+
+def _normalize_phone(phone: str) -> str:
+    """Return the mobile number stripped of any non-digits and leading country code.
+
+    We treat Indian numbers (country code 91) specially since the MSG91 flow
+    expects mobile numbers prefixed with 91 without a leading plus sign.
+    """
+    import re
+
+    digits = re.sub(r"\D", "", str(phone))
+    # drop leading 91 if present already
+    if digits.startswith("91") and len(digits) > 10:
+        digits = digits[2:]
+    return digits
 
 
 def send_otp(phone_number: str, expire_minutes: int = 5) -> bool:
@@ -211,26 +270,34 @@ def send_otp(phone_number: str, expire_minutes: int = 5) -> bool:
     expires_at = datetime.utcnow() + timedelta(minutes=expire_minutes)
     message = f"Your OTP is {code}. Valid for {expire_minutes} minutes."
 
+    # normalise the phone number and use it consistently for both sending and
+    # storing the OTP. _send_via_msg91 will prefix the country code itself.
+    cleaned = _normalize_phone(phone_number)
+    key = f"91{cleaned}"  # store with country code so verification can match
+
     try:
-        _send_via_twilio(phone_number, message)
-        _otp_store[phone_number] = {"code": str(code), "expires_at": expires_at}
+        _send_via_msg91(cleaned, otp_template_id, str(code), f"{expire_minutes}")
+        _otp_store[key] = {"code": str(code), "expires_at": expires_at}
         return True
     except Exception as err:
         # log and still store OTP for dev/testing
         print("SMS send failed:", err)
-        _otp_store[phone_number] = {"code": str(code), "expires_at": expires_at}
+        _otp_store[key] = {"code": str(code), "expires_at": expires_at}
         return True
 
 
 def verify_otp(phone_number: str, otp_code: str) -> bool:
-    entry = _otp_store.get(phone_number)
+    # always normalise when looking up the store
+    cleaned = _normalize_phone(phone_number)
+    key = f"91{cleaned}"
+    entry = _otp_store.get(key)
     if not entry:
         return False
     if datetime.utcnow() > entry["expires_at"]:
-        _otp_store.pop(phone_number, None)
+        _otp_store.pop(key, None)
         return False
     if str(entry["code"]) == str(otp_code):
-        _otp_store.pop(phone_number, None)
+        _otp_store.pop(key, None)
         return True
     return False
 
@@ -239,4 +306,5 @@ def authenticate_user_by_phone_otp(phone_number: str, otp: str) -> Optional[dict
     ok = verify_otp(phone_number, otp)
     if not ok:
         return None
+    # phone lookup should also normalise internally; this helper already does that
     return get_user_by_phone_number(phone_number)

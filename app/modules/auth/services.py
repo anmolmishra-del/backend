@@ -1,6 +1,7 @@
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 import secrets
+import json
 import re
 
 from fastapi import HTTPException
@@ -14,6 +15,19 @@ from app.core.config import settings
 
 import logging
 import requests
+import redis
+
+redis_client = redis.Redis(
+    host=settings.REDIS_HOST,
+    port=settings.REDIS_PORT,
+    db=settings.REDIS_DB,
+    decode_responses=True
+)
+
+OTP_PREFIX = "otp:"
+
+def _otp_key(phone: str) -> str:
+    return f"{OTP_PREFIX}{phone}"
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +58,6 @@ class AccountLockedError(AuthServiceError):
 
 
 # OTP Store (in production, use Redis)
-_otp_store: Dict[str, Dict[str, Any]] = {}
-
 
 # ============================================================================
 # Phone Number Utilities
@@ -83,9 +95,10 @@ def get_user_by_id(db: Session, user_id: int) -> Optional[User]:
 def get_user_by_phone(db: Session, phone_number: str) -> Optional[User]:
     """Get user by phone number"""
     normalized = normalize_phone(phone_number)
-    return db.execute(
-        select(User).where(User.phone_number == normalized)
+    user =  db.execute(
+        select(User).where(User.phone_number == phone_number)
     ).scalar_one_or_none()
+    return user
 
 
 def create_user(db: Session, user_data: UserCreate) -> User:
@@ -179,21 +192,28 @@ def send_otp(phone_number: str, purpose: str = "login", expire_minutes: int = 5)
         
         # Try to send via MSG91 if configured
         sms_sent = False
-        if settings.MSG91_AUTH_KEY and settings.MSG91_TEMPLATE_ID:
-            sms_sent = send_otp_via_msg91(normalized_phone, otp, expire_minutes)
-            if sms_sent:
-                logger.info(f"SMS sent via MSG91 to {normalized_phone}")
-        else:
-            logger.warning("MSG91 not configured - OTP will not be sent via SMS")
-        
+        # if settings.MSG91_AUTH_KEY and settings.MSG91_TEMPLATE_ID:
+            # sms_sent = send_otp_via_msg91(normalized_phone, otp, expire_minutes)
+            # if sms_sent:
+                # logger.info(f"SMS sent via MSG91 to {normalized_phone}")
+        # else:
+            # logger.warning("MSG91 not configured - OTP will not be sent via SMS")
+        # 
         # Store OTP for verification
-        _otp_store[normalized_phone] = {
+        ttl = expire_minutes * 60
+
+        # Store OTP in Redis with TTL
+        redis_client.setex(
+            _otp_key(phone_number),
+            ttl,
+            json.dumps( {
             "otp": otp,
-            "expires_at": expires_at,
+            "expires_at": expires_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "purpose": purpose,
             "attempts": 0,
             "sms_sent": sms_sent
-        }
+        })
+        )
         
         # Prepare response
         response = {
@@ -218,40 +238,45 @@ def send_otp(phone_number: str, purpose: str = "login", expire_minutes: int = 5)
             detail="Failed to generate OTP"
         )
 
-
 def verify_otp(phone_number: str, otp: str, purpose: str = "login") -> bool:
-    """Verify OTP"""
+    """Verify OTP using Redis"""
+
     try:
         normalized_phone = normalize_phone(phone_number)
-        
-        # Get stored OTP
-        stored = _otp_store.get(normalized_phone)
+
+        key = _otp_key(phone_number)
+
+        stored = redis_client.get(key)
+
         if not stored:
-            raise InvalidOTPError("No OTP found for this number. Please request a new OTP.")
-        
+            raise InvalidOTPError("OTP expired or not found")
+
+        data = json.loads(stored)
+
         # Check purpose
-        if stored["purpose"] != purpose:
+        if data["purpose"] != purpose:
             raise InvalidOTPError("OTP purpose mismatch")
-        
-        # Check expiry
-        if datetime.utcnow() > stored["expires_at"]:
-            _otp_store.pop(normalized_phone, None)
-            raise InvalidOTPError("OTP has expired. Please request a new one.")
-        
-        # Increment attempts
-        stored["attempts"] = stored.get("attempts", 0) + 1
-        
-        # Check max attempts (prevent brute force)
-        if stored["attempts"] > 3:
-            _otp_store.pop(normalized_phone, None)
-            raise InvalidOTPError("Too many failed attempts. Please request a new OTP.")
-        
-        # Verify OTP
-        if stored["otp"] != otp:
-            raise InvalidOTPError(f"Invalid OTP. {3 - stored['attempts']} attempts remaining.")
-        
-        # Success - clear OTP
-        _otp_store.pop(normalized_phone, None)
+
+        # Check attempts
+        attempts = data.get("attempts", 0) + 1
+
+        if attempts > 3:
+            redis_client.delete(key)
+            raise InvalidOTPError("Too many attempts. Request new OTP.")
+
+        # Wrong OTP
+        if data["otp"] != otp:
+            data["attempts"] = attempts
+
+            # Update attempts while keeping TTL
+            ttl = redis_client.ttl(key)
+            redis_client.setex(key, ttl, json.dumps(data))
+
+            raise InvalidOTPError(f"Invalid OTP. {3 - attempts} attempts remaining.")
+
+        # Success
+        redis_client.delete(key)
+
         return True
         
     except InvalidOTPError:
@@ -269,38 +294,40 @@ def send_otp_via_msg91(phone: str, otp: str, expire_minutes: int = 5) -> bool:
         logger.warning("MSG91 credentials missing")
         return False
     
-    try:
-        url = "https://control.msg91.com/api/v5/otp"
-        mobile = phone.replace('+', '').strip()
-        
-        params = {
-            "authkey": settings.MSG91_AUTH_KEY,
-            "template_id": settings.MSG91_TEMPLATE_ID,
-            "mobile": mobile,
-            "otp": otp,
-            "otp_expiry": expire_minutes
-        }
-        
-        headers = {
-            "content-type": "application/json",
-            "accept": "application/json"
-        }
-        
-        response = requests.post(url, params=params, headers=headers, timeout=10)
-        
-        if response.status_code == 200:
-            result = response.json()
-            if result.get("type") == "success":
-                logger.info(f"✅ OTP sent to {mobile}")
-                return True
-        
-        logger.error(f"❌ MSG91 failed: {response.text}")
-        return False
-        
-    except Exception as e:
-        logger.error(f"❌ MSG91 error: {e}")
-        return False
+    auth_key = settings.MSG91_AUTH_KEY
+    template_id = settings.MSG91_TEMPLATE_ID
 
+    sender = settings.MSG91_SENDER_ID 
+
+
+    url = "https://api.msg91.com/api/v5/flow/"
+    
+    headers = {
+        "authkey": auth_key,
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "sender": sender,
+        "mobiles": f"91{phone}",  # Assuming Indian numbers
+        "template_id": template_id ,
+        "var": otp,
+        "otp_length": len(otp),
+        "otp_expiry": 5  # minutes
+    }
+
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+
+        if response.status_code == 200:
+            return True
+        else:
+            print("MSG91 Error:", response.text)
+            return False
+
+    except Exception as e:
+        print("Failed:", e)
+        return False
 # ============================================================================
 # Authentication Functions
 # ============================================================================
@@ -322,7 +349,7 @@ def authenticate_with_otp(
         normalized_phone = normalize_phone(phone_number)
         
         # Find or create user
-        user = get_user_by_phone(db, normalized_phone)
+        user = get_user_by_phone(db, phone_number)
         is_new_user = False
         
         if not user:
@@ -358,7 +385,7 @@ def authenticate_with_otp(
     except InvalidOTPError:
         # Track failed attempt if user exists
         normalized_phone = normalize_phone(phone_number)
-        user = get_user_by_phone(db, normalized_phone)
+        user = get_user_by_phone(db, phone_number)
         
         if user:
             user.failed_otp_attempts += 1

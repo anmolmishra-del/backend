@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     MSG91_AUTH_KEY: Optional[str] = None
     MSG91_TEMPLATE_ID: Optional[str] = None
     MSG91_SENDER_ID: Optional[str] = None
+
+    # Redis (for OTP storage)
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
+    REDIS_DB: int = 0
     
     class Config:
         env_file = ".env"

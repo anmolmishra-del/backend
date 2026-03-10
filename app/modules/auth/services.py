@@ -1,310 +1,391 @@
-# app/modules/auth/services.py
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
-from random import randint
+import secrets
+import re
 
-from sqlalchemy import select, true
+from fastapi import HTTPException
+from sqlalchemy import select, or_
+from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
-# Import User model at module level (models are safe)
-from app.modules.auth.models import User
-from app.core.config import auth_key, otp_template_id
+from app.modules.auth.models import User, UserStatus, UserRole
+from app.modules.auth.schemas import UserCreate, UserUpdate
+from app.core.config import settings
 
-# in-memory fallback stores (for development/testing)
-_memory_users: Dict[str, Dict[str, Any]] = {}
-_otp_store: Dict[str, Dict[str, Any]] = {}  # phone -> {"code": str, "expires_at": datetime}
+import logging
+import requests
 
-
-# --------------------------
-# Helper: build user dict
-# --------------------------
-def _user_to_dict(db_user) -> dict:
-    return {
-        "id": getattr(db_user, "id", None),
-        "email": getattr(db_user, "email", None),
-        "username": getattr(db_user, "username", None),
-        "first_name": getattr(db_user, "first_name", None),
-        "last_name": getattr(db_user, "last_name", None),
-        "phone_number": getattr(db_user, "phone_number", None),
-        "role": getattr(db_user, "role", None),
-        "status": getattr(db_user, "status", None),
-        "is_email_verified": getattr(db_user, "is_email_verified", False),
-        "is_phone_verified": getattr(db_user, "is_phone_verified", False),
-        "roles": getattr(db_user, "roles", None),
-        "created_at": getattr(db_user, "created_at", None),
-        "updated_at": getattr(db_user, "updated_at", None),
-        "last_login": getattr(db_user, "last_login", None),
-        "hashed_password": getattr(db_user, "hashed_password", None),
-    }
+logger = logging.getLogger(__name__)
 
 
+class AuthServiceError(Exception):
+    """Base exception for auth service"""
+    pass
 
 
-def create_user(user) -> dict:
-  
- 
+class UserNotFoundError(AuthServiceError):
+    """User not found"""
+    pass
+
+
+class UserAlreadyExistsError(AuthServiceError):
+    """User already exists"""
+    pass
+
+
+class InvalidOTPError(AuthServiceError):
+    """Invalid OTP"""
+    pass
+
+
+class AccountLockedError(AuthServiceError):
+    """Account is locked"""
+    pass
+
+
+# OTP Store (in production, use Redis)
+_otp_store: Dict[str, Dict[str, Any]] = {}
+
+
+# ============================================================================
+# Phone Number Utilities
+# ============================================================================
+
+def normalize_phone(phone: str) -> str:
+    """Normalize phone number to E.164 format"""
+    # Remove all non-digit characters
+    digits = re.sub(r"\D", "", phone)
+    
+    # If it's a 10-digit Indian number, add +91
+    if len(digits) == 10:
+        return f"+91{digits}"
+    
+    # If it's 12 digits and starts with 91, add +
+    if len(digits) == 12 and digits.startswith("91"):
+        return f"+{digits}"
+    
+    # If it already has country code, ensure it has +
+    if len(digits) > 10 and not phone.startswith('+'):
+        return f"+{digits}"
+    
+    return phone
+
+
+# ============================================================================
+# User Management Functions
+# ============================================================================
+
+def get_user_by_id(db: Session, user_id: int) -> Optional[User]:
+    """Get user by ID"""
+    return db.get(User, user_id)
+
+
+def get_user_by_phone(db: Session, phone_number: str) -> Optional[User]:
+    """Get user by phone number"""
+    normalized = normalize_phone(phone_number)
+    return db.execute(
+        select(User).where(User.phone_number == normalized)
+    ).scalar_one_or_none()
+
+
+def create_user(db: Session, user_data: UserCreate) -> User:
+    """Create a new user"""
     try:
-        from app.modules.auth.schemas import UserCreate  # type: ignore
-    except Exception:
-        UserCreate = None  
+        normalized_phone = normalize_phone(user_data.phone_number)
+        
+        # Check if user already exists
+        existing = get_user_by_phone(db, normalized_phone)
+        if existing:
+            raise UserAlreadyExistsError("User with this phone number already exists")
+        
+        # Create new user
+        db_user = User(
+            phone_number=normalized_phone,
+            first_name=user_data.first_name,
+            last_name=user_data.last_name,
+            email=user_data.email,
+            username=user_data.username,
+            role=UserRole.USER.value,
+            status=UserStatus.ACTIVE.value,
+            is_phone_verified=True,  # Verified via OTP
+            phone_verified_at=datetime.utcnow()
+        )
+        
+        db.add(db_user)
+        db.flush()
+        logger.info(f"User created: {db_user.phone_number}")
+        return db_user
+        
+    except IntegrityError as e:
+        db.rollback()
+        logger.error(f"Integrity error creating user: {e}")
+        raise UserAlreadyExistsError("User with this phone number already exists")
 
-   
+
+def update_user(db: Session, user_id: int, updates: UserUpdate) -> User:
+    """Update user information"""
+    user = db.get(User, user_id)
+    if not user:
+        raise UserNotFoundError("User not found")
+    
+    update_data = updates.model_dump(exclude_unset=True)
+    
+    for field, value in update_data.items():
+        setattr(user, field, value)
+    
+    db.flush()
+    return user
+
+
+def delete_user(db: Session, user_id: int, soft_delete: bool = True) -> None:
+    """Delete user (soft delete by default)"""
+    user = db.get(User, user_id)
+    if not user:
+        raise UserNotFoundError("User not found")
+    
+    if soft_delete:
+        user.deleted_at = datetime.utcnow()
+        user.status = UserStatus.INACTIVE.value
+    else:
+        db.delete(user)
+    
+    db.flush()
+
+
+# ============================================================================
+# OTP Functions
+# ============================================================================
+
+def _generate_otp(length: int = 6) -> str:
+    """Generate a secure OTP"""
+    # In production, use secrets
+    import secrets
+    import string
+    alphabet = string.digits
+    return ''.join(secrets.choice(alphabet) for _ in range(length))
+
+
+def send_otp(phone_number: str, purpose: str = "login", expire_minutes: int = 5) -> Dict[str, Any]:
+    """Send OTP via SMS using MSG91"""
     try:
-        from app.core.database import SessionLocal
-        session = SessionLocal()
-        try:
-         
-            q = select(User).where((User.email == getattr(user, "email", None)) or (User.phone_number == getattr(user, "phone_number", None)))
-            existing = session.execute(q).scalars().first()
-            if existing:
-                raise ValueError("User already exists")
-
-            # local import for password hashing (safe)
-            from app.modules.auth.security import get_password_hash
-
-            hashed = get_password_hash(getattr(user, "password", None) or "")
-
-            db_user = User(
-                email=getattr(user, "email", None),
-                username=getattr(user, "username", None),
-                hashed_password=hashed,
-                first_name=getattr(user, "first_name", None),
-                last_name=getattr(user, "last_name", None),
-                phone_number=getattr(user, "phone_number", None),
-                role="user",
-                status="active",
-                is_email_verified=False,
-                # is_phone_verified=True,
-                roles=getattr(user, "roles", []) or []
-            )
-            session.add(db_user)
-            session.commit()
-            session.refresh(db_user)
-            return _user_to_dict(db_user)
-        except Exception as db_err:
-            session.rollback()
-            # Re-raise so caller (router) can decide response code
-            raise db_err
-        finally:
-            session.close()
-    except Exception as e:
-        # fallback to in-memory store for dev/testing
-        username = getattr(user, "username", None) or getattr(user, "email", None)
-        if not username:
-            raise ValueError("Invalid user payload")
-
-        if username in _memory_users:
-            raise ValueError("User already exists")
-
-        # local import for password hashing (safe)
-        from app.modules.auth.security import get_password_hash
-
-        hashed = get_password_hash(getattr(user, "password", None) or "")
-        u = {
-            "id": len(_memory_users) + 1,
-            "email": getattr(user, "email", None),
-            "username": username,
-            "first_name": getattr(user, "first_name", None),
-            "last_name": getattr(user, "last_name", None),
-            "phone_number": getattr(user, "phone_number", None),
-            "role": "user",
-            "status": "active",
-            "is_email_verified": False,
-            "is_phone_verified": False,
-            "roles": getattr(user, "roles", []) or [],
-            "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow(),
-            "last_login": None,
-            "hashed_password": hashed,
+        normalized_phone = normalize_phone(phone_number)
+        
+        # Generate OTP
+        otp = _generate_otp()
+        expires_at = datetime.utcnow() + timedelta(minutes=expire_minutes)
+        
+        # Log OTP for development
+        logger.info(f"📱 OTP for {normalized_phone}: {otp}")
+        
+        # Try to send via MSG91 if configured
+        sms_sent = False
+        if settings.MSG91_AUTH_KEY and settings.MSG91_TEMPLATE_ID:
+            sms_sent = send_otp_via_msg91(normalized_phone, otp, expire_minutes)
+            if sms_sent:
+                logger.info(f"SMS sent via MSG91 to {normalized_phone}")
+        else:
+            logger.warning("MSG91 not configured - OTP will not be sent via SMS")
+        
+        # Store OTP for verification
+        _otp_store[normalized_phone] = {
+            "otp": otp,
+            "expires_at": expires_at,
+            "purpose": purpose,
+            "attempts": 0,
+            "sms_sent": sms_sent
         }
-        _memory_users[username] = u
-        return u
+        
+        # Prepare response
+        response = {
+            "ok": True,
+            "message": "OTP generated successfully",
+            "expires_in": expire_minutes * 60,
+            "sms_sent": sms_sent
+        }
+        
+        # Include OTP in debug mode for testing
+        if settings.DEBUG:
+            response["debug_otp"] = otp
+            if not sms_sent:
+                response["message"] = "OTP generated (SMS not sent - configure MSG91 for production)"
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Failed to generate OTP: {e}")
+        raise HTTPException(
+            # status_code=stat.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate OTP"
+        )
 
 
-# --------------------------
-# Get user by username
-# --------------------------
-def get_user_by_username(username: str) -> Optional[dict]:
+def verify_otp(phone_number: str, otp: str, purpose: str = "login") -> bool:
+    """Verify OTP"""
     try:
-        from app.core.database import SessionLocal
-        session = SessionLocal()
-        try:
-            q = select(User).where(User.username == username)
-            db_user = session.execute(q).scalars().first()
-            if not db_user:
-                return None
-            return _user_to_dict(db_user)
-        finally:
-            session.close()
-    except Exception:
-        return _memory_users.get(username)
+        normalized_phone = normalize_phone(phone_number)
+        
+        # Get stored OTP
+        stored = _otp_store.get(normalized_phone)
+        if not stored:
+            raise InvalidOTPError("No OTP found for this number. Please request a new OTP.")
+        
+        # Check purpose
+        if stored["purpose"] != purpose:
+            raise InvalidOTPError("OTP purpose mismatch")
+        
+        # Check expiry
+        if datetime.utcnow() > stored["expires_at"]:
+            _otp_store.pop(normalized_phone, None)
+            raise InvalidOTPError("OTP has expired. Please request a new one.")
+        
+        # Increment attempts
+        stored["attempts"] = stored.get("attempts", 0) + 1
+        
+        # Check max attempts (prevent brute force)
+        if stored["attempts"] > 3:
+            _otp_store.pop(normalized_phone, None)
+            raise InvalidOTPError("Too many failed attempts. Please request a new OTP.")
+        
+        # Verify OTP
+        if stored["otp"] != otp:
+            raise InvalidOTPError(f"Invalid OTP. {3 - stored['attempts']} attempts remaining.")
+        
+        # Success - clear OTP
+        _otp_store.pop(normalized_phone, None)
+        return True
+        
+    except InvalidOTPError:
+        raise
+    except Exception as e:
+        logger.error(f"OTP verification error: {e}")
+        raise InvalidOTPError("OTP verification failed")
 
-def get_user_by_id(user_id: int) -> Optional[dict]: 
-    try:
-        from app.core.database import SessionLocal
-        session = SessionLocal()
-        try:
-            q = select(User).where(User.id == user_id)
-            db_user = session.execute(q).scalars().first()
-            if not db_user:
-                return None
-            return _user_to_dict(db_user)
-        finally:
-            session.close()
-    except Exception:
-        for u in _memory_users.values():
-            if u.get("id") == user_id:
-                return u
-        return None
-# --------------------------
-# Get user by phone number
-# --------------------------
-def get_user_by_phone_number(phone_number: str) -> Optional[dict]:
-    try:
-        from app.core.database import SessionLocal
-        session = SessionLocal()
-        try:
-            q = select(User).where(User.phone_number == phone_number)
-            db_user = session.execute(q).scalars().first()
-            if not db_user:
-                return None
-            return _user_to_dict(db_user)
-        finally:
-            session.close()
-    except Exception:
-        for u in _memory_users.values():
-            if u.get("phone_number") == phone_number:
-                return u
-        return None
-
-
-# --------------------------
-# Password authentication
-# --------------------------
-def authenticate_user(username: str, password: str) -> Optional[dict]:
-    user = get_user_by_username(username)
-    if not user:
-        return None
-    from app.modules.auth.security import verify_password
-    if not verify_password(password, user.get("hashed_password", "")):
-        return None
-    return user
-
-
-def authenticate_user_by_phone_number(phone_number: str) -> Optional[dict]:
-    user = get_user_by_phone_number(phone_number)
-    if not user:
-        return None
-    # Note: this function previously attempted password verification but no password provided;
-    # keep as a simple fetch helper
-    return user
-
-
-# --------------------------
-# OTP helpers (in same file)
-# --------------------------
-def _generate_otp(length: int = 4) -> int:
-    start = 10 ** (length - 1)
-    end = (10 ** length) - 1
-    return randint(start, end)
-
-def _send_via_msg91(phone: str, template_id: str, otp: str, validatetime: str):
-    import requests
-
-    url = "https://api.msg91.com/api/v2/flow"
-
-    payload = {
-        "template_id": template_id,
-        "short_url": "0",
-        "recipients": [
-            {
-                "mobiles": f"91{phone}",
-                "otp": otp,
-                "validatetime": validatetime
-            }
-        ]
-    }
-
-    headers = {
-        "authkey": auth_key,
-        "content-type": "application/json"
-    }
-
-    response = requests.post(url, json=payload, headers=headers)
-
-    print(response.status_code)
-    print(response.text)
-
-    return response.json()
-# def _send_via_twilio(phone: str, message: str):
-    """Send SMS using Twilio. Local import to avoid extra top-level deps."""
-    # try:
-    #     from twilio.rest import Client
-    # except Exception as e:
-    #     raise RuntimeError("twilio package not available") from e
-
-  
-    # if not (account_sid and auth_token and from_number):
-    #     raise RuntimeError("Twilio credentials not configured")
-
-    # client = Client(account_sid, auth_token)
-    # client.messages.create(body=message, from_=from_number, to=str(phone))
-
-
-def _normalize_phone(phone: str) -> str:
-    """Return the mobile number stripped of any non-digits and leading country code.
-
-    We treat Indian numbers (country code 91) specially since the MSG91 flow
-    expects mobile numbers prefixed with 91 without a leading plus sign.
+def send_otp_via_msg91(phone: str, otp: str, expire_minutes: int = 5) -> bool:
     """
-    import re
-
-    digits = re.sub(r"\D", "", str(phone))
-    # drop leading 91 if present already
-    if digits.startswith("91") and len(digits) > 10:
-        digits = digits[2:]
-    return digits
-
-
-def send_otp(phone_number: str, expire_minutes: int = 5) -> bool:
-    code = _generate_otp()
-    expires_at = datetime.utcnow() + timedelta(minutes=expire_minutes)
-    message = f"Your OTP is {code}. Valid for {expire_minutes} minutes."
-
-    # normalise the phone number and use it consistently for both sending and
-    # storing the OTP. _send_via_msg91 will prefix the country code itself.
-    cleaned = _normalize_phone(phone_number)
-    key = f"91{cleaned}"  # store with country code so verification can match
-
+    Send OTP via MSG91 OTP API
+    Returns True if successful, False otherwise
+    """
+    if not settings.MSG91_AUTH_KEY or not settings.MSG91_TEMPLATE_ID:
+        logger.warning("MSG91 credentials missing")
+        return False
+    
     try:
-        _send_via_msg91(cleaned, otp_template_id, str(code), f"{expire_minutes}")
-        _otp_store[key] = {"code": str(code), "expires_at": expires_at}
-        return True
-    except Exception as err:
-        # log and still store OTP for dev/testing
-        print("SMS send failed:", err)
-        _otp_store[key] = {"code": str(code), "expires_at": expires_at}
-        return True
-
-
-def verify_otp(phone_number: str, otp_code: str) -> bool:
-    # always normalise when looking up the store
-    cleaned = _normalize_phone(phone_number)
-    key = f"91{cleaned}"
-    entry = _otp_store.get(key)
-    if not entry:
+        url = "https://control.msg91.com/api/v5/otp"
+        mobile = phone.replace('+', '').strip()
+        
+        params = {
+            "authkey": settings.MSG91_AUTH_KEY,
+            "template_id": settings.MSG91_TEMPLATE_ID,
+            "mobile": mobile,
+            "otp": otp,
+            "otp_expiry": expire_minutes
+        }
+        
+        headers = {
+            "content-type": "application/json",
+            "accept": "application/json"
+        }
+        
+        response = requests.post(url, params=params, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            result = response.json()
+            if result.get("type") == "success":
+                logger.info(f"✅ OTP sent to {mobile}")
+                return True
+        
+        logger.error(f"❌ MSG91 failed: {response.text}")
         return False
-    if datetime.utcnow() > entry["expires_at"]:
-        _otp_store.pop(key, None)
+        
+    except Exception as e:
+        logger.error(f"❌ MSG91 error: {e}")
         return False
-    if str(entry["code"]) == str(otp_code):
-        _otp_store.pop(key, None)
-        return True
-    return False
+
+# ============================================================================
+# Authentication Functions
+# ============================================================================
+
+def authenticate_with_otp(
+    db: Session, 
+    phone_number: str, 
+    otp: str,
+    ip_address: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Authenticate user with phone and OTP
+    Returns user and flag indicating if user is new
+    """
+    try:
+        # Verify OTP first
+        verify_otp(phone_number, otp, "login")
+        
+        normalized_phone = normalize_phone(phone_number)
+        
+        # Find or create user
+        user = get_user_by_phone(db, normalized_phone)
+        is_new_user = False
+        
+        if not user:
+            # Auto-create user if not exists
+            user = User(
+                phone_number=normalized_phone,
+                role=UserRole.USER.value,
+                status=UserStatus.ACTIVE.value,
+                is_phone_verified=True,
+                phone_verified_at=datetime.utcnow()
+            )
+            db.add(user)
+            db.flush()
+            is_new_user = True
+            logger.info(f"New user auto-created: {normalized_phone}")
+        
+        # Check if account is locked
+        if user.locked_until and user.locked_until > datetime.utcnow():
+            raise AccountLockedError(f"Account locked until {user.locked_until}")
+        
+        # Update login info
+        user.failed_otp_attempts = 0
+        user.last_login_at = datetime.utcnow()
+        user.last_login_ip = ip_address
+        
+        db.flush()
+        
+        return {
+            "user": user,
+            "is_new_user": is_new_user
+        }
+        
+    except InvalidOTPError:
+        # Track failed attempt if user exists
+        normalized_phone = normalize_phone(phone_number)
+        user = get_user_by_phone(db, normalized_phone)
+        
+        if user:
+            user.failed_otp_attempts += 1
+            
+            # Lock account after 5 failed attempts
+            if user.failed_otp_attempts >= 5:
+                user.locked_until = datetime.utcnow() + timedelta(minutes=30)
+            
+            db.flush()
+        
+        raise
+    except AccountLockedError:
+        raise
+    except Exception as e:
+        logger.error(f"OTP authentication error: {e}")
+        raise AuthServiceError("Authentication failed")
 
 
-def authenticate_user_by_phone_otp(phone_number: str, otp: str) -> Optional[dict]:
-    ok = verify_otp(phone_number, otp)
-    if not ok:
-        return None
-    # phone lookup should also normalise internally; this helper already does that
-    return get_user_by_phone_number(phone_number)
+# ============================================================================
+# Role and Permission Functions
+# ============================================================================
+
+def user_has_role(user: User, role: str) -> bool:
+    """Check if user has a specific role"""
+    return user.role == role or role in user.roles
+
+
+def user_has_any_role(user: User, roles: List[str]) -> bool:
+    """Check if user has any of the specified roles"""
+    return user.role in roles or any(r in user.roles for r in roles)

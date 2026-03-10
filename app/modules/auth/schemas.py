@@ -1,63 +1,90 @@
-
-from pydantic import BaseModel, EmailStr, validator
-from typing import List, Optional
+from pydantic import BaseModel, Field, ConfigDict, validator
+from typing import Optional, List
 from datetime import datetime
+import re
 
 
+# Base schemas with ORM mode
+class BaseSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
 
 
-
-class UserCreate(BaseModel):
-	username: str
-	password: str
-	email: EmailStr 
-	first_name: Optional[str] = None
-	last_name: Optional[str] = None
-	phone_number: str = None
-	roles: List[str] = []
+# User schemas
+class UserBase(BaseSchema):
+    phone_number: str = Field(..., pattern=r'^\+?[1-9]\d{1,14}$')
+    first_name: Optional[str] = Field(None, min_length=1, max_length=50)
+    last_name: Optional[str] = Field(None, min_length=1, max_length=50)
+    email: Optional[str] = Field(None, pattern=r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
+    username: Optional[str] = Field(None, min_length=3, max_length=50, pattern=r'^[a-zA-Z0-9_]+$')
 
 
-class UserOut(BaseModel):
-	id: int
-	email: EmailStr
-	username: str
-	first_name: Optional[str]
-	last_name: Optional[str]
-	phone_number: str
-	role: str
-	status: str
-	is_email_verified: bool
-	roles: List[str] = []
-	created_at: datetime
-	updated_at: datetime
-	last_login: Optional[datetime]
-
-	class Config:
-		from_attributes = True
+class UserCreate(UserBase):
+    """Create user (all fields optional except phone)"""
+    pass
 
 
-class LoginRequest(BaseModel):
-	phone_number: str
-    #email: EmailStr
-    #password: str
-class Token(BaseModel):
-	
+class UserUpdate(BaseSchema):
+    first_name: Optional[str] = Field(None, min_length=1, max_length=50)
+    last_name: Optional[str] = Field(None, min_length=1, max_length=50)
+    email: Optional[str] = Field(None, pattern=r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
+    username: Optional[str] = Field(None, min_length=3, max_length=50, pattern=r'^[a-zA-Z0-9_]+$')
+
+
+class UserOut(BaseSchema):
+    id: int
+    phone_number: str
+    first_name: Optional[str]
+    last_name: Optional[str]
+    full_name: Optional[str]
+    email: Optional[str]
+    username: Optional[str]
+    role: str
+    status: str
+    is_phone_verified: bool
+    roles: List[str]
+    created_at: datetime
+    updated_at: datetime
+    last_login_at: Optional[datetime]
+
+
+class UserDetailOut(UserOut):
+    last_login_ip: Optional[str]
+    phone_verified_at: Optional[datetime]
+
+
+# OTP schemas
+class OTPRequest(BaseModel):
+    phone_number: str = Field(..., pattern=r'^\+?[1-9]\d{1,14}$')
+    purpose: str = "login"  # login or register
+
+
+class OTPVerify(BaseModel):
+    phone_number: str = Field(..., pattern=r'^\+?[1-9]\d{1,14}$')
+    otp: str = Field(..., min_length=4, max_length=6)
+
+
+class OTPResponse(BaseModel):
+    ok: bool
+    message: str
+    expires_in: int  # seconds
+
+
+class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
-
-class loginOut(BaseModel):
-	access_token: str
-	token_type: str = "bearer"
-	user: UserOut
+    expires_in: int
+    user: UserOut
+    is_new_user: bool
 
 
+class Token(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
 
-class OTPRequest(BaseModel):
-    phone_number: str
-    otp: str | None = None 
 
-
-class OTPSender(BaseModel):
-    phone_number: str
-    
-	
+class TokenPayload(BaseModel):
+    sub: str  # phone_number
+    user_id: int
+    exp: int
+    roles: List[str] = []

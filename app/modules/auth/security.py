@@ -1,85 +1,109 @@
 from datetime import datetime, timedelta
-import os
-from typing import Optional
+from typing import Optional, Dict, Any
 
-import bcrypt
-from jose import JWTError
-import jwt
+from jose import JWTError, jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from app.core.config import SECRET_KEY
-from app.modules.auth.services import get_user_by_phone_number
+from sqlalchemy.orm import Session
 
+from app.core.config import settings
+from app.core.database import get_db
+from app.modules.auth import services
+
+# OAuth2 scheme (using phone number as username)
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/verify-otp", auto_error=False)
+
+# Token settings
+ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES or 30 * 24 * 60  # 30 days
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
-
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+SECRET_KEY = settings.SECRET_KEY
 
 
-def get_password_hash(password: str) -> str:
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
+def create_access_token(
+    subject: str,
+    expires_delta: Optional[timedelta] = None,
+    extra_data: Optional[Dict[str, Any]] = None
+) -> str:
+    """Create a JWT access token"""
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     
-    try:
-
-        return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
-    except Exception:
-        return False
-
-
-def create_access_token(subject: int, expires_delta: Optional[timedelta] = None) -> str:
-    now = datetime.utcnow()
-    expire = now + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode = {"sub": subject, "exp": expire}
+    to_encode = {
+        "exp": expire,
+        "sub": str(subject),
+        "iat": datetime.utcnow()
+    }
+    
+    if extra_data:
+        to_encode.update(extra_data)
+    
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
 
-
-def decode_token(token: str) -> dict:
+def verify_token(token: str) -> Optional[Dict[str, Any]]:
+    """Verify a JWT token and return payload"""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        
+        # Check expiration
+        exp = payload.get("exp")
+        if exp and datetime.utcnow() > datetime.fromtimestamp(exp):
+            return None
+        
         return payload
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token has expired")
-    except Exception:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Could not validate credentials")
+    except JWTError:
+        return None
 
 
-def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
-    # from app.modules.auth.services import get_user_by_username
+async def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    """Get current user from token"""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
     
-    payload = decode_token(token)
-    phone_number = payload.get("sub")
-    if phone_number is None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token payload")
-    user = get_user_by_phone_number(phone_number)
-    if not user:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User not found")
-    return user
-
-
-
-import random
-from datetime import datetime, timedelta
-import logging
-
-OTP_LENGTH = 6
-OTP_EXPIRE_MINUTES = int(os.getenv("OTP_EXPIRE_MINUTES", "5"))
-
-def generate_otp(length: int = OTP_LENGTH) -> str:
-    """Generate a numeric OTP of given length as a string (e.g. '042391')."""
-    start = 10**(length - 1)
-    return str(random.randint(start, 10**length - 1))
-
-def send_sms(phone_number: str, message: str) -> bool:
-    """
-    Placeholder to send SMS. Replace this with your SMS provider SDK/API call.
-    Return True on success, False on failure.
-    """
-    # Example log — replace with provider integration (Twilio, Fast2SMS, MSG91, etc.)
-    logging.info(f"[SMS placeholder] To: {phone_number} Message: {message}")
-    # TODO: integrate real SMS provider and return success status
-    return True
+    if not token:
+        raise credentials_exception
+    
+    # Verify token
+    payload = verify_token(token)
+    if not payload:
+        raise credentials_exception
+    
+    phone_number: str = payload.get("sub")
+    user_id: int = payload.get("user_id")
+    
+    if not phone_number or not user_id:
+        raise credentials_exception
+    
+    # Get user from database
+    user = services.get_user_by_id(db, user_id)
+    if not user or user.deleted_at:
+        raise credentials_exception
+    
+    # Check if user is active
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is inactive"
+        )
+    
+    # Return user info with roles
+    return {
+        "id": user.id,
+        "user_id": user.id,
+        "phone_number": user.phone_number,
+        "username": user.username,
+        "email": user.email,
+        "full_name": user.full_name,
+        "role": user.role,
+        "roles": user.roles + [user.role],
+        "user": user
+    }

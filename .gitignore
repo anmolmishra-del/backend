@@ -1,7 +1,11 @@
 # Bytecode
-__pycache__/
+*__pycache__/
+*.pyc
+*.json
 *.py[cod]
-
+.env
+hrms/
+*ini
 # Virtual environments
 venv/
 new/

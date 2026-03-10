@@ -1,349 +1,469 @@
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
+from sqlalchemy import select, func
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.exc import IntegrityError
 
-from sqlalchemy import select
-
+from app.core.database import get_db
 from app.modules.auth.models import User
 from app.modules.employee.models import Employee, Department, Designation
+from app.modules.employee.schemas import (
+    EmployeeCreate, EmployeeUpdate, 
+    DepartmentCreate, DesignationCreate
+)
 
-# no OTP or random logic here; keep imports focused on the objects we actually use
+import logging
+
+logger = logging.getLogger(__name__)
 
 
-def _resolve_fk(val, model):
-    """Resolve a foreign key field which may be an integer id or a name string.
+class EmployeeServiceError(Exception):
+    """Base exception for employee service"""
+    pass
 
+
+class NotFoundError(EmployeeServiceError):
+    """Resource not found"""
+    pass
+
+
+class DuplicateError(EmployeeServiceError):
+    """Duplicate resource"""
+    pass
+
+
+def _resolve_fk(val, model, db: Session) -> Optional[int]:
+    """
+    Resolve a foreign key field which may be an integer id or a name/title string.
     Returns the integer id if found, otherwise None.
     """
     if val is None:
         return None
-    try:
+    
+    # If it's already an integer, return it
+    if isinstance(val, int):
+        return val
+    
+    # Try to convert to int if it's a string containing only digits
+    if isinstance(val, str) and val.isdigit():
         return int(val)
-    except (TypeError, ValueError):
-        # look up by name attribute
-        from app.core.database import SessionLocal
-        session = SessionLocal()
-        try:
-            q = select(model).where(model.name == val)
-            obj = session.execute(q).scalars().first()
-            return obj.id if obj else None
-        finally:
-            session.close()
+    
+    # Look up by text attribute
+    try:
+        if hasattr(model, "name"):
+            obj = db.execute(select(model).where(model.name == val)).scalar_one_or_none()
+        elif hasattr(model, "title"):
+            obj = db.execute(select(model).where(model.title == val)).scalar_one_or_none()
+        else:
+            return None
+        
+        return obj.id if obj else None
+    except Exception as e:
+        logger.error(f"Error resolving FK for {model.__name__}: {e}")
+        return None
 
 
 def _generate_employee_code(user_id: int) -> str:
-    # simple deterministic code based on user id, padded to six digits
+    """Generate a unique employee code"""
     return f"EMP{user_id:06d}"
 
 
-def _employee_to_dict(db_emp) -> dict:
-    # combine employee-specific fields with related user fields (via relationship)
-    out = {
-        "id": getattr(db_emp, "id", None),
-        "user_id": getattr(db_emp, "user_id", None),
-        "employee_code": getattr(db_emp, "employee_code", None),
-        "position": getattr(db_emp, "position", None),
-        "department_id": getattr(db_emp, "department_id", None),
-        "designation_id": getattr(db_emp, "designation_id", None),
-        "created_at": getattr(db_emp, "created_at", None),
-        "updated_at": getattr(db_emp, "updated_at", None),
+def _enrich_employee_with_names(employee: Employee, db: Session) -> Dict:
+    """Add department and designation names to employee dict"""
+    employee_dict = {
+        "id": employee.id,
+        "user_id": employee.user_id,
+        "employee_code": employee.employee_code,
+        "department_id": employee.department_id,
+        "designation_id": employee.designation_id,
+        "created_at": employee.created_at,
+        "updated_at": employee.updated_at,
+        "date_of_joining": employee.date_of_joining,
+        "date_of_leaving": employee.date_of_leaving,
+        "is_active": employee.is_active,
+        "manager_id": employee.manager_id,
+        "street1": employee.street1,
+        "street2": employee.street2,
+        "city": employee.city,
+        "state": employee.state,
+        "country": employee.country,
+        "zip_code": employee.zip_code,
+        "permanent_street1": employee.permanent_street1,
+        "permanent_street2": employee.permanent_street2,
+        "permanent_city": employee.permanent_city,
+        "permanent_state": employee.permanent_state,
+        "permanent_country": employee.permanent_country,
+        "permanent_zip_code": employee.permanent_zip_code,
+        "date_of_birth": employee.date_of_birth,
+        "gender": employee.gender,
+        "blood_group": employee.blood_group,
+        "emergency_contact": employee.emergency_contact,
+        "uan_number": employee.uan_number,
+        "pan_number": employee.pan_number,
+        "aadhar_number": employee.aadhar_number,
+        "passport_number": employee.passport_number,
+        "esic_number": employee.esic_number,    
+        "bank_account_number": employee.bank_account_number,
+        "pf_number": employee.pf_number,
+        "bank_name": employee.bank_name,
+        "bank_ifsc_code": employee.bank_ifsc_code,
+        "bank_branch": employee.bank_branch
     }
-    user = getattr(db_emp, "user", None)
-    if user is not None:
-        out.update({
-            "first_name": getattr(user, "first_name", None),
-            "last_name": getattr(user, "last_name", None),
-            "email": getattr(user, "email", None),
-            "username": getattr(user, "username", None),
-            "phone_number": getattr(user, "phone_number", None),
+    
+    # Add user details
+    if employee.user:
+        employee_dict.update({
+            "first_name": employee.user.first_name,
+            "last_name": employee.user.last_name,
+            "email": employee.user.email,
+            "phone_number": employee.user.phone_number,
         })
-    return out
+    
+    # Add department name
+    if employee.department_id and employee.department:
+        employee_dict["department_name"] = employee.department.name
+    
+    # Add designation title
+    if employee.designation_id and employee.designation:
+        employee_dict["designation_title"] = employee.designation.title
+    
+    return employee_dict
 
 
-def _department_to_dict(db_dep) -> dict:
-    return {
-        "id": getattr(db_dep, "id", None),
-        "name": getattr(db_dep, "name", None),
-        "description": getattr(db_dep, "description", None),
-        "created_at": getattr(db_dep, "created_at", None),
-        "updated_at": getattr(db_dep, "updated_at", None),
-    }
-
-
-def _designation_to_dict(db_des) -> dict:
-    return {
-        "id": getattr(db_des, "id", None),
-        "title": getattr(db_des, "title", None),
-        "description": getattr(db_des, "description", None),
-        "created_at": getattr(db_des, "created_at", None),
-        "updated_at": getattr(db_des, "updated_at", None),
-    }
-
-
-def create_employee_service(employee) -> dict:
-    # first create a user record using the auth module; employee payload should
-    # include at least email and password (auth.schemas may enforce this).
-    from app.modules.auth.services import create_user
-
-    user_payload = employee
-    q = select(User).where((User.email == getattr(user_payload, "email", None)) or (User.phone_number == getattr(user_payload, "phone_number", None)))
-    user = session.execute(q).scalars().first()
-    if not user:
-        user = create_user(user_payload)
-    user_id = user.get("id")
-
+# Employee Services
+def create_employee_service(db: Session, employee_data: EmployeeCreate) -> Employee:
+    """Create a new employee with associated user"""
     try:
-        from app.core.database import SessionLocal
-        session = SessionLocal()
-        try:
-            # check for an existing employee record for this user
-            q = select(Employee).where(Employee.user_id == user_id)
-            existing = session.execute(q).scalars().first()
-            if existing:
-                raise ValueError("Employee record already exists for this user")
-
-            dep_id = _resolve_fk(getattr(employee, "department", None), Department)
-            desig_id = _resolve_fk(getattr(employee, "designation", None), Designation)
-
-            new_employee = Employee(
-                user_id=user_id,
-                employee_code=_generate_employee_code(user_id),
-                # employee-specific fields
-                position=getattr(employee, "position", None),
-                department_id=dep_id,
-                designation_id=desig_id,
+        # Check if user already exists
+        existing_user = db.execute(
+            select(User).where(
+                (User.email == employee_data.email) |
+                (User.phone_number == employee_data.phone_number)
             )
-            session.add(new_employee)
-            session.commit()
-            session.refresh(new_employee)
-            # build output combining employee and user info (user dict from earlier)
-            out = _employee_to_dict(new_employee)
-            out.update({
-                k: user.get(k) for k in (
-                    "first_name",
-                    "last_name",
-                    "email",
-                    "username",
-                    "phone_number",
-                )
-            })
-            return out
-        finally:
-            session.close()
-    except Exception as e:
-        raise ValueError(f"Failed to create employee: {e}") from e
-    
-def create_department_service(department) -> dict:
-    try:
-        from app.core.database import SessionLocal
-        session = SessionLocal()
-        try:
-            q = select(Department).where(Department.name == getattr(department, "name", None))
-            existing = session.execute(q).scalars().first()
-            if existing:
-                raise ValueError("Department with this name already exists")
-
-            new_department = Department(
-                name=getattr(department, "name", None),
-                description=getattr(department, "description", None)
+        ).scalar_one_or_none()
+        
+        if existing_user:
+            # Check if this user already has an employee record
+            existing_employee = db.execute(
+                select(Employee).where(Employee.user_id == existing_user.id)
+            ).scalar_one_or_none()
+            
+            if existing_employee:
+                raise DuplicateError("Employee record already exists for this user")
+            
+            user_id = existing_user.id
+        else:
+            # Create new user (password will be set by auth module separately)
+            user = User(
+                first_name=employee_data.first_name,
+                last_name=employee_data.last_name,
+                email=employee_data.email,
+                phone_number=employee_data.phone_number
             )
-            session.add(new_department)
-            session.commit()
-            session.refresh(new_department)
-            return _department_to_dict(new_department)
-        finally:
-            session.close()
+            db.add(user)
+            db.flush()  # Get user.id without committing
+            user_id = user.id
+        
+        # Resolve department and designation
+        dep_id = _resolve_fk(employee_data.department, Department, db)
+        desig_id = _resolve_fk(employee_data.designation, Designation, db)
+        
+        # Create employee
+        new_employee = Employee(
+            user_id=user_id,
+            employee_code=_generate_employee_code(user_id),
+            department_id=dep_id,
+            designation_id=desig_id,
+        )
+        db.add(new_employee)
+        db.flush()
+        
+        # Refresh to load relationships
+        db.refresh(new_employee, ['user', 'department', 'designation'])
+        
+        return new_employee
+        
+    except IntegrityError as e:
+        logger.error(f"Integrity error creating employee: {e}")
+        db.rollback()
+        raise DuplicateError("Employee with this data already exists")
     except Exception as e:
-        raise ValueError(f"Failed to create department: {e}") from e
+        logger.error(f"Error creating employee: {e}")
+        db.rollback()
+        raise EmployeeServiceError(f"Failed to create employee: {str(e)}")
 
-def create_designation_service(designation) -> dict:
+
+def get_employee_by_id(db: Session, employee_id: int) -> Optional[Employee]:
+    """Get employee by ID"""
+    return db.execute(
+        select(Employee)
+        .options(joinedload(Employee.user), joinedload(Employee.department), joinedload(Employee.designation))
+        .where(Employee.id == employee_id)
+    ).scalar_one_or_none()
+
+
+def get_all_employees(
+    db: Session,
+    skip: int = 0, 
+    limit: int = 100, 
+    department_id: Optional[int] = None,
+    is_active: Optional[bool] = None
+) -> List[Employee]:
+    """Get all employees with pagination and filters"""
+    query = select(Employee).options(
+        joinedload(Employee.user), 
+        joinedload(Employee.department), 
+        joinedload(Employee.designation)
+    )
+    
+    if department_id is not None:
+        query = query.where(Employee.department_id == department_id)
+    
+    if is_active is not None:
+        query = query.where(Employee.is_active == is_active)
+    
+    query = query.offset(skip).limit(limit)
+    return db.execute(query).scalars().all()
+
+
+def update_employee(db: Session, employee_id: int, updates: EmployeeUpdate) -> Employee:
+    """Update employee information with all available fields"""
+    employee = db.execute(
+        select(Employee)
+        .options(joinedload(Employee.user))
+        .where(Employee.id == employee_id)
+    ).scalar_one_or_none()
+    
+    if not employee:
+        raise NotFoundError("Employee not found")
+    
+    # Update department/designation
+    if updates.department is not None:
+        employee.department_id = _resolve_fk(updates.department, Department, db)
+    
+    if updates.designation is not None:
+        employee.designation_id = _resolve_fk(updates.designation, Designation, db)
+    
+    # Update employee fields
+    employee_fields = [
+        'date_of_joining', 'date_of_leaving', 'is_active', 'manager_id',
+        'street1', 'street2', 'city', 'state', 'country', 'zip_code',
+        'permanent_street1', 'permanent_street2', 'permanent_city', 
+        'permanent_state', 'permanent_country', 'permanent_zip_code',
+        'date_of_birth', 'gender', 'blood_group', 'emergency_contact',
+        'uan_number', 'pan_number', 'aadhar_number', 'passport_number',
+        'esic_number', 'pf_number', 'bank_account_number', 'bank_name',
+        'bank_ifsc_code', 'bank_branch'
+    ]
+    
+    for field in employee_fields:
+        if hasattr(updates, field) and getattr(updates, field) is not None:
+            setattr(employee, field, getattr(updates, field))
+    
+    # Update user fields if user exists
+    if employee.user:
+        user_fields = ['first_name', 'last_name', 'email', 'phone_number']
+        for field in user_fields:
+            if hasattr(updates, field) and getattr(updates, field) is not None:
+                # Special handling for email uniqueness
+                if field == 'email':
+                    existing_user = db.execute(
+                        select(User).where(
+                            User.email == getattr(updates, field),
+                            User.id != employee.user_id
+                        )
+                    ).scalar_one_or_none()
+                    if existing_user:
+                        raise DuplicateError("Email already in use")
+                
+                setattr(employee.user, field, getattr(updates, field))
+    
+    db.flush()
+    db.refresh(employee, ['user', 'department', 'designation'])
+    return employee
+
+def delete_employee(db: Session, employee_id: int) -> None:
+    """Soft delete employee"""
+    employee = db.execute(
+        select(Employee).where(Employee.id == employee_id)
+    ).scalar_one_or_none()
+    
+    if not employee:
+        raise NotFoundError("Employee not found")
+    
+    employee.is_active = False
+    db.flush()
+
+
+# Department Services
+def create_department_service(db: Session, department_data: DepartmentCreate) -> Department:
+    """Create a new department"""
     try:
-        from app.core.database import SessionLocal
-        session = SessionLocal()
-        try:
-            q = select(Designation).where(Designation.title == getattr(designation, "title", None))
-            existing = session.execute(q).scalars().first()
-            if existing:
-                raise ValueError("Designation with this title already exists")
+        # Check for existing department
+        existing = db.execute(
+            select(Department).where(Department.name == department_data.name)
+        ).scalar_one_or_none()
+        
+        if existing:
+            raise DuplicateError("Department with this name already exists")
+        
+        new_department = Department(
+            name=department_data.name,
+            description=department_data.description
+        )
+        db.add(new_department)
+        db.flush()
+        db.refresh(new_department)
+        
+        return new_department
+        
+    except IntegrityError as e:
+        logger.error(f"Integrity error creating department: {e}")
+        db.rollback()
+        raise DuplicateError("Department with this name already exists")
 
-            new_designation = Designation(
-                title=getattr(designation, "title", None),
-                description=getattr(designation, "description", None)
+
+def list_departments(db: Session, skip: int = 0, limit: int = 100) -> List[Department]:
+    """List all departments with pagination"""
+    return db.execute(
+        select(Department).offset(skip).limit(limit)
+    ).scalars().all()
+
+
+def get_department_by_id(db: Session, department_id: int) -> Optional[Department]:
+    """Get department by ID"""
+    return db.get(Department, department_id)
+
+
+def update_department(db: Session, department_id: int, updates) -> Department:
+    """Update department information"""
+    department = db.get(Department, department_id)
+    
+    if not department:
+        raise NotFoundError("Department not found")
+    
+    if updates.name is not None:
+        # Check if new name is unique
+        existing = db.execute(
+            select(Department).where(
+                Department.name == updates.name,
+                Department.id != department_id
             )
-            session.add(new_designation)
-            session.commit()
-            session.refresh(new_designation)
-            return _designation_to_dict(new_designation)
-        finally:
-            session.close()
-    except Exception as e:
-        raise ValueError(f"Failed to create designation: {e}") from e
-def get_employee_by_id(employee_id: int) -> Optional[Dict[str, Any]]:
-    try:
-        from app.core.database import SessionLocal
-        from sqlalchemy.orm import joinedload
-        session = SessionLocal()
-        try:
-            q = select(Employee).options(joinedload(Employee.user)).where(Employee.id == employee_id)
-            employee = session.execute(q).scalars().first()
-            if not employee:
-                return None
-            return _employee_to_dict(employee)
-        finally:
-            session.close()
-    except Exception as e:
-        raise ValueError(f"Failed to retrieve employee: {e}") from e    
+        ).scalar_one_or_none()
+        
+        if existing:
+            raise DuplicateError("Department with this name already exists")
+        
+        department.name = updates.name
     
-
-def list_employees() -> list:
-    try:
-        from app.core.database import SessionLocal
-        from sqlalchemy.orm import joinedload
-        session = SessionLocal()
-        try:
-            q = select(Employee).options(joinedload(Employee.user))
-            employees = session.execute(q).scalars().all()
-            return [_employee_to_dict(emp) for emp in employees]
-        finally:
-            session.close()
-    except Exception as e:
-        raise ValueError(f"Failed to list employees: {e}") from e
-
-def update_employee(employee_id: int, updates) -> dict:
-    try:
-        from app.core.database import SessionLocal
-        session = SessionLocal()
-        try:
-            q = select(Employee).where(Employee.id == employee_id)
-            employee = session.execute(q).scalars().first()
-            if not employee:
-                raise ValueError("Employee not found")
-
-            # update employee-specific scalar fields
-            for field in ["position"]:
-                if hasattr(updates, field) and getattr(updates, field) is not None:
-                    setattr(employee, field, getattr(updates, field))
-
-            # handle department/designation as before
-            if hasattr(updates, "department") and getattr(updates, "department") is not None:
-                employee.department_id = _resolve_fk(getattr(updates, "department"), Department)
-            if hasattr(updates, "designation") and getattr(updates, "designation") is not None:
-                employee.designation_id = _resolve_fk(getattr(updates, "designation"), Designation)
-
-            # user-related updates: email, username, password, names, phone
-            if user_id := getattr(employee, "user_id", None):
-                from app.modules.auth.models import User as AuthUser
-                q_user = select(AuthUser).where(AuthUser.id == user_id)
-                user = session.execute(q_user).scalars().first()
-                if user:
-                    for field in ["first_name", "last_name", "email", "phone_number", "username"]:
-                        if hasattr(updates, field) and getattr(updates, field) is not None:
-                            setattr(user, field, getattr(updates, field))
-                    if hasattr(updates, "password") and getattr(updates, "password") is not None:
-                        from app.modules.auth.security import get_password_hash
-                        user.hashed_password = get_password_hash(getattr(updates, "password"))
-
-            # handle foreign keys via resolver
-            if hasattr(updates, "department") and getattr(updates, "department") is not None:
-                employee.department_id = _resolve_fk(getattr(updates, "department"), Department)
-            if hasattr(updates, "designation") and getattr(updates, "designation") is not None:
-                employee.designation_id = _resolve_fk(getattr(updates, "designation"), Designation)
-
-            session.commit()
-            session.refresh(employee)
-            return _employee_to_dict(employee)
-        finally:
-            session.close()
-    except Exception as e:
-        raise ValueError(f"Failed to update employee: {e}") from e
+    if updates.description is not None:
+        department.description = updates.description
     
-def update_department(department_id: int, updates) -> dict:
-    try:
-        from app.core.database import SessionLocal
-        session = SessionLocal()
-        try:
-            q = select(Department).where(Department.id == department_id)
-            department = session.execute(q).scalars().first()
-            if not department:
-                raise ValueError("Department not found")
+    db.flush()
+    db.refresh(department)
+    return department
 
-            for field in ["name", "description"]:
-                if hasattr(updates, field) and getattr(updates, field) is not None:
-                    setattr(department, field, getattr(updates, field))
 
-            session.commit()
-            session.refresh(department)
-            return _department_to_dict(department)
-        finally:
-            session.close()
-    except Exception as e:
-        raise ValueError(f"Failed to update department: {e}") from e
+def delete_department(db: Session, department_id: int) -> None:
+    """Delete department"""
+    department = db.get(Department, department_id)
     
-
-def update_designation(designation_id: int, updates) -> dict:
-    try:
-        from app.core.database import SessionLocal
-        session = SessionLocal()
-        try:
-            q = select(Designation).where(Designation.id == designation_id)
-            designation = session.execute(q).scalars().first()
-            if not designation:
-                raise ValueError("Designation not found")
-
-            for field in ["title", "description"]:
-                if hasattr(updates, field) and getattr(updates, field) is not None:
-                    setattr(designation, field, getattr(updates, field))
-
-            session.commit()
-            session.refresh(designation)
-            return _designation_to_dict(designation)
-        finally:
-            session.close()
-    except Exception as e:
-        raise ValueError(f"Failed to update designation: {e}") from e
-
-def delete_employee(employee_id: int):
-    try:
-        from app.core.database import SessionLocal
-        session = SessionLocal()
-        try:
-            q = select(Employee).where(Employee.id == employee_id)
-            employee = session.execute(q).scalars().first()
-            if not employee:
-                raise ValueError("Employee not found")
-            session.delete(employee)
-            session.commit()
-        finally:
-            session.close()
-    except Exception as e:
-        raise ValueError(f"Failed to delete employee: {e}") from e
+    if not department:
+        raise NotFoundError("Department not found")
     
-def delete_department(department_id: int):
-    try:
-        from app.core.database import SessionLocal
-        session = SessionLocal()
-        try:
-            q = select(Department).where(Department.id == department_id)
-            department = session.execute(q).scalars().first()
-            if not department:
-                raise ValueError("Department not found")
-            session.delete(department)
-            session.commit()
-        finally:
-            session.close()
-    except Exception as e:
-        raise ValueError(f"Failed to delete department: {e}") from e
+    # Check if department has employees
+    employee_count = db.execute(
+        select(func.count()).select_from(Employee).where(Employee.department_id == department_id)
+    ).scalar()
+    
+    if employee_count > 0:
+        raise EmployeeServiceError("Cannot delete department with associated employees")
+    
+    db.delete(department)
+    db.flush()
 
-def delete_designation(designation_id: int):    
+
+# Designation Services
+def create_designation_service(db: Session, designation_data: DesignationCreate) -> Designation:
+    """Create a new designation"""
     try:
-        from app.core.database import SessionLocal
-        session = SessionLocal()
-        try:
-            q = select(Designation).where(Designation.id == designation_id)
-            designation = session.execute(q).scalars().first()
-            if not designation:
-                raise ValueError("Designation not found")
-            session.delete(designation)
-            session.commit()
-        finally:
-            session.close()
-    except Exception as e:
-        raise ValueError(f"Failed to delete designation: {e}") from e
+        existing = db.execute(
+            select(Designation).where(Designation.title == designation_data.title)
+        ).scalar_one_or_none()
+        
+        if existing:
+            raise DuplicateError("Designation with this title already exists")
+        
+        new_designation = Designation(
+            title=designation_data.title,
+            description=designation_data.description
+        )
+        db.add(new_designation)
+        db.flush()
+        db.refresh(new_designation)
+        
+        return new_designation
+        
+    except IntegrityError as e:
+        logger.error(f"Integrity error creating designation: {e}")
+        db.rollback()
+        raise DuplicateError("Designation with this title already exists")
+
+
+def list_designations(db: Session, skip: int = 0, limit: int = 100) -> List[Designation]:
+    """List all designations with pagination"""
+    return db.execute(
+        select(Designation).offset(skip).limit(limit)
+    ).scalars().all()
+
+
+def get_designation_by_id(db: Session, designation_id: int) -> Optional[Designation]:
+    """Get designation by ID"""
+    return db.get(Designation, designation_id)
+
+
+def update_designation(db: Session, designation_id: int, updates) -> Designation:
+    """Update designation information"""
+    designation = db.get(Designation, designation_id)
+    
+    if not designation:
+        raise NotFoundError("Designation not found")
+    
+    if updates.title is not None:
+        # Check if new title is unique
+        existing = db.execute(
+            select(Designation).where(
+                Designation.title == updates.title,
+                Designation.id != designation_id
+            )
+        ).scalar_one_or_none()
+        
+        if existing:
+            raise DuplicateError("Designation with this title already exists")
+        
+        designation.title = updates.title
+    
+    if updates.description is not None:
+        designation.description = updates.description
+    
+    db.flush()
+    db.refresh(designation)
+    return designation
+
+
+def delete_designation(db: Session, designation_id: int) -> None:
+    """Delete designation"""
+    designation = db.get(Designation, designation_id)
+    
+    if not designation:
+        raise NotFoundError("Designation not found")
+    
+    # Check if designation has employees
+    employee_count = db.execute(
+        select(func.count()).select_from(Employee).where(Employee.designation_id == designation_id)
+    ).scalar()
+    
+    if employee_count > 0:
+        raise EmployeeServiceError("Cannot delete designation with associated employees")
+    
+    db.delete(designation)
+    db.flush()

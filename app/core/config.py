@@ -14,3 +14,34 @@ DATABASE_URL = os.getenv(
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret")
 auth_key = os.getenv("MSG91_AUTH_KEY")
 otp_template_id = os.getenv("MSG91_OTP_TEMPLATE_ID")
+
+from pydantic_settings import BaseSettings
+from typing import Optional
+
+
+class Settings(BaseSettings):
+    # App settings
+    APP_NAME: str = "HR Management System"
+    DEBUG: bool = False
+    
+    # Database
+    DATABASE_URL: str = "sqlite:///./hrms.db"
+    
+    # Security
+    SECRET_KEY: str = "your-secret-key-change-in-production"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30 * 24 * 60  # 30 days
+    
+    # CORS
+    BACKEND_CORS_ORIGINS: list = ["*"]
+    
+    # SMS (MSG91) - Optional for production
+    MSG91_AUTH_KEY: Optional[str] = None
+    MSG91_TEMPLATE_ID: Optional[str] = None
+    MSG91_SENDER_ID: Optional[str] = None
+    
+    class Config:
+        env_file = ".env"
+        case_sensitive = True
+
+
+settings = Settings()

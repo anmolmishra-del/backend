@@ -11,6 +11,12 @@ engine = create_engine(DATABASE_URL, future=True, echo=False)
 
 SessionLocal = sessionmaker(engine, expire_on_commit=False)
 
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 # def init_models():
 # 	# Create tables (for development). In production use Alembic migrations.

@@ -2,11 +2,12 @@ from fastapi import FastAPI
 
 from app.modules.auth import router as auth_router
 from app.modules.employee import emp_router
+from app.modules.attendance import attendance_router
 from app.core.database import engine
 from app.core.config import DATABASE_URL
 
 
-app = FastAPI(title="User Management API", version="1.0.0")
+app = FastAPI(title="Human Resource Management System API", version="1.0.0")
 
 
 @app.get("/")
@@ -17,6 +18,7 @@ def root():
 
 app.include_router(auth_router)
 app.include_router(emp_router)
+app.include_router(attendance_router)
 
 
 @app.on_event("startup")
@@ -36,7 +38,6 @@ async def on_startup():
         alembic_cfg = AlembicConfig(os.path.join(os.path.dirname(__file__), "..", "alembic.ini"))
         alembic_cfg.set_main_option("sqlalchemy.url", DATABASE_URL)
         command.upgrade(alembic_cfg, "head")
-        print("Database migrations applied")
     except Exception as mig_exc:  # pragma: no cover - migrations may not be present
         # typically this will be an OperationalError if the database is
         # unreachable or credentials are wrong. fall back to create_all so

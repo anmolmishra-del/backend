@@ -55,11 +55,15 @@ def send_otp(
     db: Session = Depends(get_db)
 ):
     """Send OTP to phone number for login/registration"""
+    # verify user exists or create a new one (without committing yet)
+    User = services.get_user_by_phone(db, otp_request.phone_number)
+    if not User:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found. Please register first.")
     result = services.send_otp(
         otp_request.phone_number, 
         otp_request.purpose
     )
-    return OTPResponse(
+    return OTPResponse(  
         ok=True,
         message=result["message"],
         expires_in=result["expires_in"]
@@ -171,6 +175,14 @@ def get_all_users(
     ).scalars().all()
     return users
 
+@router.post("/users", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+def create_user(
+    user_create: UserCreate,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_roles("admin"))
+):
+    """Create a new user (Admin only)"""
+    return handle_service_error(db, services.create_user, db, user_create)
 
 @router.get("/users/{user_id}", response_model=UserDetailOut)
 def get_user(

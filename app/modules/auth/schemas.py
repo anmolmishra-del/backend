@@ -41,7 +41,6 @@ class UserOut(BaseSchema):
     role: str
     status: str
     is_phone_verified: bool
-    roles: List[str]
     created_at: datetime
     updated_at: datetime
     last_login_at: Optional[datetime]
@@ -87,4 +86,3 @@ class TokenPayload(BaseModel):
     sub: str  # phone_number
     user_id: int
     exp: int
-    roles: List[str] = []
